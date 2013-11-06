@@ -2031,6 +2031,61 @@ get_last_resolved_addr(void)
   return last_resolved_addr;
 }
 
+/** Given a <b>list</b> of interface IPv4 addresses, return one that has
+ * been explicitly configured as a listener of type <b>type</b>. If we can't
+ * find one, settle for any non-private address (unless <b>allow_internal</b>
+ * is set, then settle for anything). Return 0 if we can't find any suitable
+ * address. */
+uint32_t
+find_good_addr_from_list(int notice_severity, smartlist_t *list, 
+                         uint8_t type, int allow_internal)
+{
+  uint32_t considered_addr = 0;
+ 
+  SMARTLIST_FOREACH_BEGIN(list, uint32_t *, interface_ip_ptr) {
+    if (! allow_internal && is_internal_IP(*interface_ip_ptr, 0)) {
+      log_fn(notice_severity, LD_CONFIG,
+          "Interface IP address '%s' is a private address too. "
+          "Ignoring.", fmt_addr32(*interface_ip_ptr));
+      continue;
+    } else {
+      log_fn(notice_severity, LD_CONFIG,
+            "Learned IP address '%s' for local interface."
+            " Considering that.", fmt_addr32(*interface_ip_ptr));
+      considered_addr = *interface_ip_ptr;
+      if (configured_ports) {
+        SMARTLIST_FOREACH_BEGIN(configured_ports, port_cfg_t *, port) {
+          if (port->type == type &&
+            tor_addr_to_ipv4h(&port->addr) == *interface_ip_ptr) {
+            log_fn(notice_severity, LD_CONFIG,
+                   "Address '%s' has been configured explicitly by the user. "
+                   "Seems like a good choice, picking that one.", 
+                   fmt_addr32(*interface_ip_ptr));
+            return *interface_ip_ptr;
+          }
+        } SMARTLIST_FOREACH_END(port);
+      }
+    }
+  } SMARTLIST_FOREACH_END(interface_ip_ptr);
+  
+  if (considered_addr) {
+    if (configured_ports && smartlist_len(configured_ports) > 0)
+      log_fn(notice_severity, LD_CONFIG,
+             "Couldn't find an explicitly configured address, "
+             "settling for '%s'.", fmt_addr32(considered_addr));
+    else
+      /* We got here from options_validate(), and we're just checking if we're
+       * globally reachable and can be a directory authority. This function will
+       * be called again when ports have been configured and we can pick the right
+       * address then. */
+      log_fn(notice_severity, LD_CONFIG,
+             "We have at least one usable address, that's enough right now.");
+  }
+  
+  return considered_addr;
+}
+
+
 /**
  * Use <b>options-\>Address</b> to guess our public IP address.
  *
@@ -2050,6 +2105,7 @@ get_last_resolved_addr(void)
  */
 int
 resolve_my_address(int warn_severity, const or_options_t *options,
+                   uint8_t listener_type,
                    uint32_t *addr_out,
                    const char **method_out, char **hostname_out)
 {
@@ -2095,8 +2151,6 @@ resolve_my_address(int warn_severity, const or_options_t *options,
     /* then we have to resolve it */
     explicit_ip = 0;
     if (tor_lookup_hostname(hostname, &addr)) { /* failed to resolve */
-      uint32_t interface_ip; /* host order */
-
       if (explicit_hostname) {
         log_fn(warn_severity, LD_CONFIG,
                "Could not resolve local Address '%s'. Failing.", hostname);
@@ -2105,39 +2159,41 @@ resolve_my_address(int warn_severity, const or_options_t *options,
       log_fn(notice_severity, LD_CONFIG,
              "Could not resolve guessed local hostname '%s'. "
              "Trying something else.", hostname);
-      if (get_interface_address(warn_severity, &interface_ip)) {
+
+      smartlist_t *interface_ips = get_interface_address(warn_severity);
+      if (! interface_ips) {
         log_fn(warn_severity, LD_CONFIG,
                "Could not get local interface IP address. Failing.");
         return -1;
       }
       from_interface = 1;
-      addr = interface_ip;
+      addr = find_good_addr_from_list(notice_severity, interface_ips, listener_type, 1);
       log_fn(notice_severity, LD_CONFIG, "Learned IP address '%s' for "
              "local interface. Using that.", fmt_addr32(addr));
       strlcpy(hostname, "<guessed from interfaces>", sizeof(hostname));
     } else { /* resolved hostname into addr */
       if (!explicit_hostname &&
           is_internal_IP(addr, 0)) {
-        uint32_t interface_ip;
 
         log_fn(notice_severity, LD_CONFIG, "Guessed local hostname '%s' "
                "resolves to a private IP address (%s). Trying something "
                "else.", hostname, fmt_addr32(addr));
-
-        if (get_interface_address(warn_severity, &interface_ip)) {
+        
+        smartlist_t *interface_ips = get_interface_address(warn_severity);
+        if (! interface_ips) {
           log_fn(warn_severity, LD_CONFIG,
                  "Could not get local interface IP address. Too bad.");
-        } else if (is_internal_IP(interface_ip, 0)) {
-          log_fn(notice_severity, LD_CONFIG,
-                 "Interface IP address '%s' is a private address too. "
-                 "Ignoring.", fmt_addr32(interface_ip));
         } else {
-          from_interface = 1;
-          addr = interface_ip;
-          log_fn(notice_severity, LD_CONFIG,
-                 "Learned IP address '%s' for local interface."
-                 " Using that.", fmt_addr32(addr));
-          strlcpy(hostname, "<guessed from interfaces>", sizeof(hostname));
+          uint32_t good_addr = 
+            find_good_addr_from_list(notice_severity, interface_ips, listener_type, 0);
+          if (good_addr) {
+            addr = good_addr;
+            from_interface = 1;
+            strlcpy(hostname, "<guessed from interfaces>", sizeof(hostname));
+          } else {
+            log_fn(warn_severity, LD_CONFIG,
+                   "Could not find a suitable local interface IP address. :(");
+          }
         }
       }
     }
@@ -2513,7 +2569,8 @@ options_validate(or_options_t *old_options, or_options_t *options,
   if (authdir_mode(options)) {
     /* confirm that our address isn't broken, so we can complain now */
     uint32_t tmp;
-    if (resolve_my_address(LOG_WARN, options, &tmp, NULL, NULL) < 0)
+    if (resolve_my_address(LOG_WARN, options, CONN_TYPE_DIR_LISTENER, &tmp,
+                           NULL, NULL) < 0)
       REJECT("Failed to resolve/guess local address. See logs for details.");
   }
 
@@ -5029,7 +5086,7 @@ parse_dir_authority_line(const char *line, dirinfo_type_t required_type,
   dirinfo_type_t type = V2_DIRINFO;
   int is_not_hidserv_authority = 0, is_not_v2_authority = 0;
   double weight = 1.0;
-
+  
   items = smartlist_new();
   smartlist_split_string(items, line, NULL,
                          SPLIT_SKIP_SPACE|SPLIT_IGNORE_BLANK, -1);
@@ -6111,7 +6168,7 @@ get_first_listener_addrport_string(int listener_type)
          to iterate all listener connections and find out in which
          port it ended up listening: */
       if (cfg->port == CFG_AUTO_PORT) {
-        port = router_get_active_listener_port_by_type_af(listener_type,
+        port = router_get_active_listener_port_by_addr_type_af(&cfg->addr, listener_type,
                                                   tor_addr_family(&cfg->addr));
         if (!port)
           return NULL;

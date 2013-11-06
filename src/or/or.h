@@ -2065,12 +2065,18 @@ typedef struct {
   uint16_t dir_port; /**< Port for HTTP directory connections. */
 
   /** A router's IPv6 address, if it has one. */
-  /* XXXXX187 Actually these should probably be part of a list of addresses,
+  /* XXXXX186 Actually these should probably be part of a list of addresses,
    * not just a special case.  Use abstractions to access these; don't do it
    * directly. */
   tor_addr_t ipv6_addr;
   uint16_t ipv6_orport;
 
+  /** Additional tor_addr_port_t we're listening on. */
+  /* XXXX#9729 We're not self-testing these, or use them in any other way. 
+   * Their only purpose is to be advertised to bridge authorities. 
+   * They _are_ being tested by the bridge authorities however. */
+  smartlist_t *more_or_listeners;
+  
   crypto_pk_t *onion_pkey; /**< Public RSA key for onions. */
   crypto_pk_t *identity_pkey;  /**< Public RSA key for signing. */
   /** Public curve25519 key for onions */
@@ -2379,11 +2385,16 @@ typedef struct node_t {
   /* The below items are used only by authdirservers for
    * reachability testing. */
 
-  /** When was the last time we could reach this OR? */
-  time_t last_reachable;        /* IPv4. */
-  time_t last_reachable6;       /* IPv6. */
+  /** When was the last time we could reach this OR? List of addr_reachability_t. */
+  smartlist_t *last_reachable;
 
 } node_t;
+
+/* Time of last reachability associated with a specific tor_addr_port_t. */
+typedef struct addr_reachability_t {
+  tor_addr_port_t addrport;
+  time_t last_reachable;
+}  addr_reachability_t;
 
 /** Contents of a v2 (non-consensus, non-vote) network status object. */
 typedef struct networkstatus_v2_t {
@@ -5115,4 +5126,5 @@ typedef struct tor_version_t {
 } tor_version_t;
 
 #endif
+
 

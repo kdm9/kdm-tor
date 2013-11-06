@@ -1000,8 +1000,12 @@ dirserv_set_router_is_running(routerinfo_t *router, time_t now)
     /* We always know if we are down ourselves. */
     answer = ! we_are_hibernating();
   } else if (router->is_hibernating &&
-             (router->cache_info.published_on +
-              HIBERNATION_PUBLICATION_SKEW) > node->last_reachable) {
+             node_af_reachable_since(node, AF_INET,
+               router->cache_info.published_on + HIBERNATION_PUBLICATION_SKEW) &&
+             (! options->AuthDirHasIPv6Connectivity || 
+              node_af_reachable_since(node, AF_INET6,
+                router->cache_info.published_on + HIBERNATION_PUBLICATION_SKEW)))
+  {
     /* A hibernating router is down unless we (somehow) had contact with it
      * since it declared itself to be hibernating. */
     answer = 0;
@@ -1012,16 +1016,13 @@ dirserv_set_router_is_running(routerinfo_t *router, time_t now)
     /* Otherwise, a router counts as up if we found all announced OR
        ports reachable in the last REACHABLE_TIMEOUT seconds.
 
-       XXX prop186 For now there's always one IPv4 and at most one
-       IPv6 OR port.
-
        If we're not on IPv6, don't consider reachability of potential
        IPv6 OR port since that'd kill all dual stack relays until a
        majority of the dir auths have IPv6 connectivity. */
-    answer = (now < node->last_reachable + REACHABLE_TIMEOUT &&
-              (options->AuthDirHasIPv6Connectivity != 1 ||
-               tor_addr_is_null(&router->ipv6_addr) ||
-               now < node->last_reachable6 + REACHABLE_TIMEOUT));
+    answer = node_af_reachable_since(node, AF_INET, now - REACHABLE_TIMEOUT) &&
+             (options->AuthDirHasIPv6Connectivity != 1 ||
+              tor_addr_is_null(&router->ipv6_addr) ||
+              node_af_reachable_since(node, AF_INET6, now - REACHABLE_TIMEOUT));
   }
 
   if (!answer && running_long_enough_to_decide_unreachable()) {
@@ -1035,9 +1036,8 @@ dirserv_set_router_is_running(routerinfo_t *router, time_t now)
        XXX ipv6
      */
     time_t when = now;
-    if (node->last_reachable &&
-        node->last_reachable + REACHABILITY_TEST_CYCLE_PERIOD < now)
-      when = node->last_reachable + REACHABILITY_TEST_CYCLE_PERIOD;
+    if (! node_af_reachable_since(node, AF_INET, now - REACHABILITY_TEST_CYCLE_PERIOD))
+      when = node_get_af_last_reachability(node, AF_INET) + REACHABILITY_TEST_CYCLE_PERIOD;
     rep_hist_note_router_unreachable(router->cache_info.identity_digest, when);
   }
 
@@ -2750,9 +2750,9 @@ set_routerstatus_from_routerinfo(routerstatus_t *rs,
   rs->dir_port = ri->dir_port;
   if (options->AuthDirHasIPv6Connectivity == 1 &&
       !tor_addr_is_null(&ri->ipv6_addr) &&
-      node->last_reachable6 >= now - REACHABLE_TIMEOUT) {
-    /* We're configured as having IPv6 connectivity. There's an IPv6
-       OR port and it's reachable so copy it to the routerstatus.  */
+      node_af_reachable_since(node, AF_INET6, now - REACHABLE_TIMEOUT)) {
+    /* We're configured as having IPv6 connectivity. All IPv6 OR ports 
+       are reachable so copy the main one to the routerstatus.  */
     tor_addr_copy(&rs->ipv6_addr, &ri->ipv6_addr);
     rs->ipv6_orport = ri->ipv6_orport;
   }
@@ -2982,7 +2982,8 @@ dirserv_generate_networkstatus_vote_obj(crypto_pk_t *private_key,
   tor_assert(private_key);
   tor_assert(cert);
 
-  if (resolve_my_address(LOG_WARN, options, &addr, NULL, &hostname)<0) {
+  if (resolve_my_address(LOG_WARN, options, CONN_TYPE_DIR_LISTENER, &addr, \
+      NULL, &hostname)<0) {
     log_warn(LD_NET, "Couldn't resolve my hostname");
     return NULL;
   }
@@ -3222,7 +3223,8 @@ generate_v2_networkstatus_opinion(void)
 
   private_key = get_server_identity_key();
 
-  if (resolve_my_address(LOG_WARN, options, &addr, NULL, &hostname)<0) {
+  if (resolve_my_address(LOG_WARN, options, CONN_TYPE_DIR_LISTENER, &addr,
+    NULL, &hostname)<0) {
     log_warn(LD_NET, "Couldn't resolve my hostname");
     goto done;
   }
@@ -3636,10 +3638,10 @@ dirserv_orconn_tls_done(const tor_addr_t *addr,
                ri->or_port);
       if (tor_addr_family(addr) == AF_INET) {
         rep_hist_note_router_reachable(digest_rcvd, addr, or_port, now);
-        node->last_reachable = now;
+        node_set_last_reachability(node, &orport, now);
       } else if (tor_addr_family(addr) == AF_INET6) {
         /* No rephist for IPv6.  */
-        node->last_reachable6 = now;
+        node_set_last_reachability(node, &orport, now);
       }
     }
   }
@@ -3704,6 +3706,34 @@ dirserv_single_reachability_test(time_t now, routerinfo_t *router)
     chan = channel_tls_connect(&router->ipv6_addr, router->ipv6_orport,
                                router->cache_info.identity_digest);
     if (chan) command_setup_channel(chan);
+  }
+
+  /* As a bridge authority, test more or-addresses. (See #9729.) */
+  if (authdir_mode_bridge(get_options()) && router->more_or_listeners) {
+    // We don't want to get crazy checking lots of addresses, so maybe
+    // just the equivalent of a /29.
+    const int MAX_ADDRESS_CHECKS = 7;
+    if (smartlist_len(router->more_or_listeners) > MAX_ADDRESS_CHECKS)
+      /* There is no point in checking any addresses because it is never
+         going to be the case that all are going to be found reachable. */
+      return;
+    
+    SMARTLIST_FOREACH_BEGIN(router->more_or_listeners, tor_addr_port_t *, l) {
+      if (! (tor_addr_compare(&l->addr, &router_addr, CMP_EXACT) == 0 && 
+             l->port == router->or_port) &&
+          ! (get_options()->AuthDirHasIPv6Connectivity == 1 &&
+             tor_addr_compare(&l->addr, &router->ipv6_addr, CMP_EXACT) &&
+             l->port == router->ipv6_orport)) {
+        char addrstr[TOR_ADDR_BUF_LEN];
+        log_debug(LD_OR, "Testing reachability of %s at %s:%u.",
+                  router->nickname,
+                  tor_addr_to_str(addrstr, &l->addr, sizeof(addrstr), 1),
+                  l->port);
+        chan = channel_tls_connect(&l->addr, l->port,
+                                  router->cache_info.identity_digest);
+        if (chan) command_setup_channel(chan);
+      }
+    } SMARTLIST_FOREACH_END(l);
   }
 }
 

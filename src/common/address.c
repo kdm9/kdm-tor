@@ -75,6 +75,10 @@
 #error We rely on AF_UNSPEC being 0. Let us know about your platform, please!
 #endif
 
+/* We use these for get_static_interface_address6(). */
+static tor_addr_t *last_discovered_ipv4_address;
+static tor_addr_t *last_discovered_ipv6_address;
+
 /** Convert the tor_addr_t in <b>a</b>, with port in <b>port</b>, into a
  * sockaddr object in *<b>sa_out</b> of object size <b>len</b>.  If not enough
  * room is available in sa_out, or on error, return 0.  On success, return
@@ -1326,23 +1330,22 @@ tor_addr_is_multicast(const tor_addr_t *a)
   return 0;
 }
 
-/** Set *<b>addr</b> to the IP address (if any) of whatever interface
- * connects to the Internet.  This address should only be used in checking
- * whether our address has changed.  Return 0 on success, -1 on failure.
+/** Return a list of IP addresses of whatever interfaces connect to the
+ * Internet. These addresses should only be used in checking whether our
+ * addresses have changed. Return when we can't find an address.
  */
-int
-get_interface_address6(int severity, sa_family_t family, tor_addr_t *addr)
+smartlist_t *
+get_interface_address6(int severity, sa_family_t family)
 {
-  /* XXX really, this function should yield a smartlist of addresses. */
   smartlist_t *addrs;
-  int sock=-1, r=-1;
+  int sock=-1;
   struct sockaddr_storage my_addr, target_addr;
   socklen_t addr_len;
-  tor_assert(addr);
+  tor_addr_t *addr;
+  smartlist_t *return_addrs = smartlist_new(), *r = NULL;
 
   /* Try to do this the smart way if possible. */
   if ((addrs = get_interface_addresses_raw(severity))) {
-    int rv = -1;
     SMARTLIST_FOREACH_BEGIN(addrs, tor_addr_t *, a) {
       if (family != AF_UNSPEC && family != tor_addr_family(a))
         continue;
@@ -1350,22 +1353,19 @@ get_interface_address6(int severity, sa_family_t family, tor_addr_t *addr)
           tor_addr_is_multicast(a))
         continue;
 
+      addr = tor_malloc(sizeof(tor_addr_t));
       tor_addr_copy(addr, a);
-      rv = 0;
-
-      /* If we found a non-internal address, declare success.  Otherwise,
-       * keep looking. */
-      if (!tor_addr_is_internal(a, 0))
-        break;
+      smartlist_add(return_addrs, addr);
     } SMARTLIST_FOREACH_END(a);
 
     SMARTLIST_FOREACH(addrs, tor_addr_t *, a, tor_free(a));
     smartlist_free(addrs);
-    return rv;
+    
+    return smartlist_len(return_addrs) > 0 ? return_addrs : NULL;
   }
 
   /* Okay, the smart way is out. */
-  memset(addr, 0, sizeof(tor_addr_t));
+  addr = tor_malloc_zero(sizeof(tor_addr_t));
   memset(&target_addr, 0, sizeof(target_addr));
   /* Don't worry: no packets are sent. We just need to use a real address
    * on the actual Internet. */
@@ -1386,7 +1386,7 @@ get_interface_address6(int severity, sa_family_t family, tor_addr_t *addr)
     sin->sin_family = AF_INET;
     sin->sin_addr.s_addr = htonl(0x12000001); /* 18.0.0.1 */
   } else {
-    return -1;
+    return NULL;
   }
   if (sock < 0) {
     int e = tor_socket_errno(-1);
@@ -1409,11 +1409,90 @@ get_interface_address6(int severity, sa_family_t family, tor_addr_t *addr)
   }
 
   tor_addr_from_sockaddr(addr, (struct sockaddr*)&my_addr, NULL);
-  r=0;
+  smartlist_add(return_addrs, addr);
+  r = return_addrs;
  err:
   if (sock >= 0)
     tor_close_socket(sock);
+  if (! r)
+    tor_free(addr);
   return r;
+}
+
+/** Return the first address of a specific address family from a list of
+ * addresses, or NULL if there is no such address in the list. */
+tor_addr_t *
+get_first_address_by_af(smartlist_t *list, sa_family_t family) {
+  tor_addr_t *addr;
+  SMARTLIST_FOREACH_BEGIN(list, tor_addr_t *, a) {
+    if (tor_addr_family(a) == family) {
+      addr = tor_malloc(sizeof(tor_addr_t));
+      tor_addr_copy(addr, a);
+      return addr;
+    }
+  } SMARTLIST_FOREACH_END(a);
+  return NULL;
+}
+
+/** Set *<b>addr</b> to a single address of address family <b>family</b> retrieved
+ * from get_interface_address6() and change it only if we must, i.e. if it's no
+ * longer in the list. 
+ * Returns -1 if we know of no address of this family, 0 if we know of an address
+ * and knew about it previously, and 1 if we know about an address, but we had to
+ * change it from a previous one. */
+int
+get_stable_interface_address6(int severity, sa_family_t family, tor_addr_t* addr) {
+  smartlist_t *list = get_interface_address6(severity, family);
+  tor_addr_t *first_address;
+  
+  if (smartlist_len(list) <= 0)
+    return -1;
+  if (! (first_address = get_first_address_by_af(list, family)))
+    return -1;
+  
+  /* If we don't know any address yet, pick the one we've discovered above. */
+  if (family == AF_INET && ! last_discovered_ipv4_address) {
+    last_discovered_ipv4_address = first_address;
+    tor_addr_copy(addr, first_address);
+    return 1;
+  } else if (family == AF_INET6 && ! last_discovered_ipv6_address) {
+    last_discovered_ipv6_address = first_address;
+    tor_addr_copy(addr, first_address);
+    return 1;
+  }
+  
+  /* If the previous address is in the list, stick to it. */
+  switch (family) {
+    case AF_INET:
+      SMARTLIST_FOREACH_BEGIN(list, tor_addr_t *, a) {
+        if (tor_addr_eq(last_discovered_ipv4_address, a)) {
+          tor_addr_copy(addr, a);
+          tor_free(first_address);
+          return 0;
+        }
+      } SMARTLIST_FOREACH_END(a);
+      break;
+    case AF_INET6:
+      SMARTLIST_FOREACH_BEGIN(list, tor_addr_t *, a) {
+        if (tor_addr_eq(last_discovered_ipv6_address, a)) {
+          tor_addr_copy(addr, a);
+        tor_free(first_address);
+          return 0;
+        }
+      } SMARTLIST_FOREACH_END(a);
+      break;
+  }
+  
+  /* We're still here, so we have entirely new addresses. */
+  if (family == AF_INET) {
+    tor_free(last_discovered_ipv4_address);
+    last_discovered_ipv4_address = first_address;
+  } else if (family == AF_INET6) {
+    tor_free(last_discovered_ipv6_address);
+    last_discovered_ipv6_address = first_address;
+  }
+  tor_addr_copy(addr, first_address);
+  return 1;
 }
 
 /* ======
@@ -1651,21 +1730,28 @@ tor_dup_ip(uint32_t addr)
 }
 
 /**
- * Set *<b>addr</b> to the host-order IPv4 address (if any) of whatever
- * interface connects to the Internet.  This address should only be used in
- * checking whether our address has changed.  Return 0 on success, -1 on
- * failure.
+ * Return a list of host-order IPv4 addresses (if any) of whatever
+ * interface connects to the Internet.  These addresses should only be used in
+ * checking whether our addresses have changed.  Return when we can't
+ * find an address.
  */
-int
-get_interface_address(int severity, uint32_t *addr)
+smartlist_t *
+get_interface_address(int severity)
 {
-  tor_addr_t local_addr;
-  int r;
-
-  r = get_interface_address6(severity, AF_INET, &local_addr);
-  if (r>=0)
-    *addr = tor_addr_to_ipv4h(&local_addr);
-  return r;
+  smartlist_t *r;
+  
+  r = get_interface_address6(severity, AF_INET);
+  if (r != NULL) {
+    smartlist_t *addrs = smartlist_new();
+    SMARTLIST_FOREACH_BEGIN(r, tor_addr_t *, local_addr) {
+      uint32_t *addr = tor_malloc(sizeof(uint32_t));
+      *addr = tor_addr_to_ipv4h(local_addr);
+      smartlist_add(addrs, addr);
+    } SMARTLIST_FOREACH_END(local_addr);
+    return addrs;
+  }
+  
+  return NULL;
 }
 
 /** Return true if we can tell that <b>name</b> is a canonical name for the

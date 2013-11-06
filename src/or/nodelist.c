@@ -115,7 +115,8 @@ node_get_or_create(const char *identity_digest)
   node = tor_malloc_zero(sizeof(node_t));
   memcpy(node->identity, identity_digest, DIGEST_LEN);
   HT_INSERT(nodelist_map, &the_nodelist->nodes_by_id, node);
-
+  node->last_reachable = smartlist_new();
+  
   smartlist_add(the_nodelist->nodes, node);
   node->nodelist_idx = smartlist_len(the_nodelist->nodes) - 1;
 
@@ -128,7 +129,11 @@ node_get_or_create(const char *identity_digest)
 static void
 node_addrs_changed(node_t *node)
 {
-  node->last_reachable = node->last_reachable6 = 0;
+  if (node->last_reachable) {
+    SMARTLIST_FOREACH(node->last_reachable, addr_reachability_t *, ar, tor_free(ar));
+    smartlist_clear(node->last_reachable);
+  } else
+    node->last_reachable = smartlist_new();
   node->country = -1;
 }
 
@@ -734,6 +739,8 @@ node_get_all_orports(const node_t *node)
       ap->port = node->ri->or_port;
       smartlist_add(sl, ap);
     }
+    if (node->ri->more_or_listeners)
+      smartlist_add_all(sl, node->ri->more_or_listeners);
   } else if (node->rs != NULL) {
       tor_addr_port_t *ap = tor_malloc(sizeof(tor_addr_port_t));
       tor_addr_from_ipv4h(&ap->addr, node->rs->addr);
@@ -971,6 +978,103 @@ nodelist_refresh_countries(void)
   smartlist_t *nodes = nodelist_get_list();
   SMARTLIST_FOREACH(nodes, node_t *, node,
                     node_set_country(node));
+}
+
+/** Set the last reachability time for address/port <b>ap</b> to <b>value</b>,
+ * or add it to the list if we don't know about it yet. */
+void
+node_set_last_reachability(node_t *node, tor_addr_port_t *ap, time_t value) {
+  tor_addr_t *addr = tor_malloc(sizeof(addr));
+  tor_addr_copy(addr, &ap->addr);
+  int found = 0;
+  
+  SMARTLIST_FOREACH_BEGIN(node->last_reachable, addr_reachability_t *, ar) {
+    if (tor_addr_compare(&ap->addr, &(ar->addrport.addr), CMP_EXACT) == 0 &&
+        ap->port == ar->addrport.port) {
+      ar->addrport.port = ap->port;
+      ar->addrport.addr = *addr;
+      ar->last_reachable = value;
+      found = 1;
+      break;
+    }
+  } SMARTLIST_FOREACH_END(ar);
+  
+  if (! found) {
+    addr_reachability_t *ar = tor_malloc(sizeof(addr_reachability_t));
+    ar->addrport = *tor_addr_port_new(addr, ap->port);
+    ar->last_reachable = value;
+    smartlist_add(node->last_reachable, ar);
+  }
+}
+
+int
+addr_replied(tor_addr_t* addr, uint32_t port, smartlist_t *reachability) {
+  SMARTLIST_FOREACH_BEGIN(reachability, addr_reachability_t *, ar) {
+    if (tor_addr_eq(addr, &(ar->addrport.addr)) &&
+        port == ar->addrport.port)
+      return 1;
+  } SMARTLIST_FOREACH_END(ar);
+  return 0;
+}
+
+int
+all_listeners_replied(routerinfo_t *ri, smartlist_t *reachability) {
+  int have_ipv4 = ri->addr;
+  int have_ipv6 = ! tor_addr_is_null(&ri->ipv6_addr);  
+  tor_assert(have_ipv4 || have_ipv6);
+  tor_addr_t addr;
+  
+  if (have_ipv4) {
+    tor_addr_from_ipv4h(&addr, ri->addr);
+    if (! addr_replied(&addr, ri->or_port, reachability))
+      return 0;
+  }
+  
+  if (have_ipv6 &&
+      ! addr_replied(&ri->ipv6_addr, ri->ipv6_orport, reachability))
+      return 0;
+  
+  if (ri->more_or_listeners)
+    SMARTLIST_FOREACH_BEGIN(ri->more_or_listeners, tor_addr_port_t *, ap) {
+      if (! addr_replied(&ap->addr, ap->port, reachability))
+        return 0;
+    } SMARTLIST_FOREACH_END(ap);
+  
+  return 1;
+}
+
+/** Return whether all orports of address family <b>af</b> have been reachable 
+ * at least once since <b>time</b>. Return 0 if we don't know about any orports
+ * of that family. */
+int
+node_af_reachable_since(node_t *node, sa_family_t af, time_t time) {
+  int result = 1, have_one = 0;
+  if (! all_listeners_replied(node->ri, node->last_reachable))
+    return 0;
+  SMARTLIST_FOREACH_BEGIN(node->last_reachable, addr_reachability_t *, ar) {
+    result = result && tor_addr_family(&(ar->addrport.addr)) == af && 
+               ar->last_reachable >= time;
+    have_one = 1;
+  } SMARTLIST_FOREACH_END(ar);
+  return have_one && result;
+}
+
+/** Find the time we last knew all addresses of family <b>af</b> to be reachable.
+ * If we don't know anything about this address family, return 0. */
+time_t
+node_get_af_last_reachability(node_t *node, sa_family_t af) {
+  time_t earliest = 0;
+  if (! all_listeners_replied(node->ri, node->last_reachable))
+    return 0;
+  SMARTLIST_FOREACH_BEGIN(node->last_reachable, addr_reachability_t *, ar) {
+      if (tor_addr_family(&(ar->addrport.addr)) == af) {
+        if (! earliest)
+          earliest = ar->last_reachable;
+        else if (ar->last_reachable < earliest)
+          earliest = ar->last_reachable;
+      }
+  } SMARTLIST_FOREACH_END(ar);
+  return earliest;
 }
 
 /** Return true iff router1 and router2 have similar enough network addresses
@@ -1512,4 +1616,3 @@ update_router_have_minimum_dir_info(void)
   have_min_dir_info = res;
   need_to_update_have_min_dir_info = 0;
 }
-

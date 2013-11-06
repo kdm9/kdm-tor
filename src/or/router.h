@@ -60,8 +60,8 @@ int authdir_mode_publishes_statuses(const or_options_t *options);
 int authdir_mode_tests_reachability(const or_options_t *options);
 int authdir_mode_bridge(const or_options_t *options);
 
-uint16_t router_get_active_listener_port_by_type_af(int listener_type,
-                                                    sa_family_t family);
+uint16_t router_get_active_listener_port_by_addr_type_af(
+  const tor_addr_t *addr, int listener_type, sa_family_t family);
 uint16_t router_get_advertised_or_port(const or_options_t *options);
 uint16_t router_get_advertised_or_port_by_af(const or_options_t *options,
                                              sa_family_t family);
@@ -94,6 +94,10 @@ int router_extrainfo_digest_is_me(const char *digest);
 int router_is_me(const routerinfo_t *router);
 int router_fingerprint_is_me(const char *fp);
 int router_pick_published_address(const or_options_t *options, uint32_t *addr);
+port_cfg_t * router_get_main_ipv6_listener_address(
+  const smartlist_t *ports);
+tor_addr_t * router_get_main_listener_addr_by_af(const or_options_t * options,
+                                                 sa_family_t af);
 int router_rebuild_descriptor(int force);
 char *router_dump_router_to_string(routerinfo_t *router,
                                    crypto_pk_t *ident_key);
@@ -107,6 +111,7 @@ int router_ipv6_preferred(const routerinfo_t *router);
 int router_has_addr(const routerinfo_t *router, const tor_addr_t *addr);
 int router_has_orport(const routerinfo_t *router,
                       const tor_addr_port_t *orport);
+unsigned int router_count_or_listeners(const routerinfo_t* router);
 int extrainfo_dump_to_string(char **s, extrainfo_t *extrainfo,
                              crypto_pk_t *ident_key);
 int is_legal_nickname(const char *s);

@@ -1099,6 +1099,46 @@ find_single_ipv6_orport(const smartlist_t *list,
   return ret;
 }
 
+/** Find more possible listener addresses to populate more_or_listeners in
+ * routerinfo_t, except the ones we've already found. Takes list of directory
+ * tokens <b>addresses</b>, and adds parsed addresses to <b>out</b>, unless
+ * they are <b>except_v4</b> or <b>except_v6</b> with corresponding ports 
+ * <b>v4_port</b>, <b>v6_port</b>.
+ * 
+ * (See ticket #9729.) */
+void
+find_more_or_listeners(smartlist_t *addresses, uint32_t except_v4,
+                       uint32_t v4_port, tor_addr_t *except_v6,
+                       uint32_t v6_port, smartlist_t *out)
+{
+  if (! out)
+    out = smartlist_new();
+
+  SMARTLIST_FOREACH_BEGIN(addresses, directory_token_t *, t) {
+    tor_addr_t a;
+    maskbits_t bits;
+    uint16_t port_min, port_max;
+    tor_assert(t->n_args >= 1);
+
+    switch (tor_addr_parse_mask_ports(t->args[0], 0, &a, &bits,
+                                      &port_min, &port_max)) {
+      case AF_INET6:
+        if (bits == 128 && port_min == port_max && 
+          (tor_addr_is_null(except_v6) ||
+           (! (tor_addr_compare(&a, except_v6, CMP_EXACT) == 0 && 
+            port_min == v6_port))))
+          smartlist_add(out, tor_addr_port_new(&a, port_min));
+        break;
+      case AF_INET:
+        if (bits == 32 && port_min == port_max && 
+          ! (tor_addr_eq_ipv4h(&a, except_v4) &&
+              port_min == v4_port))
+          smartlist_add(out, tor_addr_port_new(&a, port_min));
+        break;
+    }
+  } SMARTLIST_FOREACH_END(t);
+}
+
 /** Helper function: reads a single router entry from *<b>s</b> ...
  * *<b>end</b>.  Mallocs a new router and returns it if all goes well, else
  * returns NULL.  If <b>cache_copy</b> is true, duplicate the contents of
@@ -1368,9 +1408,18 @@ router_parse_entry_from_string(const char *s, const char *end,
     if (or_addresses) {
       find_single_ipv6_orport(or_addresses, &router->ipv6_addr,
                               &router->ipv6_orport);
+      
+      /* Find more possible listener addresses to populate more_or_listeners
+       * with, see comments of find_more_or_listeners(). */
+      find_more_or_listeners(or_addresses,
+                             router->addr, router->or_port, 
+                             &router->ipv6_addr, router->ipv6_orport,
+                             router->more_or_listeners);
+      
       smartlist_free(or_addresses);
     }
   }
+  
   exit_policy_tokens = find_all_exitpolicy(tokens);
   if (!smartlist_len(exit_policy_tokens)) {
     log_warn(LD_DIR, "No exit policy tokens in descriptor.");

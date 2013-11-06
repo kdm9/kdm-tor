@@ -2791,6 +2791,10 @@ routerinfo_free(routerinfo_t *router)
     SMARTLIST_FOREACH(router->declared_family, char *, s, tor_free(s));
     smartlist_free(router->declared_family);
   }
+  if (router->more_or_listeners) {
+    SMARTLIST_FOREACH(router->more_or_listeners, tor_addr_port_t *, ap, tor_free(ap));
+    smartlist_free(router->more_or_listeners);
+  }
   addr_policy_list_free(router->exit_policy);
   short_policy_free(router->ipv6_exit_policy);
 
@@ -4185,7 +4189,7 @@ trusted_dir_server_new(const char *nickname, const char *address,
   dir_server_t *result;
 
   if (!address) { /* The address is us; we should guess. */
-    if (resolve_my_address(LOG_WARN, get_options(),
+    if (resolve_my_address(LOG_WARN, get_options(), CONN_TYPE_DIR_LISTENER,
                            &a, NULL, &hostname) < 0) {
       log_warn(LD_CONFIG,
                "Couldn't find a suitable address when adding ourself as a "

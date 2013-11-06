@@ -185,6 +185,7 @@ test_addr_ip6_helpers(void)
   char rbuf[REVERSE_LOOKUP_NAME_BUF_LEN];
   struct in6_addr a1, a2;
   tor_addr_t t1, t2;
+  smartlist_t *s1, *s2;
   int r, i;
   uint16_t port1, port2;
   maskbits_t mask;
@@ -720,14 +721,17 @@ test_addr_ip6_helpers(void)
   test_assert(sizeof(tor_addr_t) >= sizeof(struct in6_addr));
 
   /* get interface addresses */
-  r = get_interface_address6(LOG_DEBUG, AF_INET, &t1);
-  i = get_interface_address6(LOG_DEBUG, AF_INET6, &t2);
+  s1 = get_interface_address6(LOG_DEBUG, AF_INET);
+  s2 = get_interface_address6(LOG_DEBUG, AF_INET6);
 
-  TT_BLATHER(("v4 address: %s (family=%d)", fmt_addr(&t1),
-              tor_addr_family(&t1)));
-  TT_BLATHER(("v6 address: %s (family=%d)", fmt_addr(&t2),
-              tor_addr_family(&t2)));
-
+  SMARTLIST_FOREACH_BEGIN(s1, tor_addr_t *, a) {
+    TT_BLATHER(("v4 address: %s (family=%d)", fmt_addr(a),
+                tor_addr_family(a)));
+  } SMARTLIST_FOREACH_END(a);
+  SMARTLIST_FOREACH_BEGIN(s2, tor_addr_t *, a) {
+    TT_BLATHER(("v6 address: %s (family=%d)", fmt_addr(a),
+                tor_addr_family(a)));
+  } SMARTLIST_FOREACH_END(a);
  done:
   ;
 }

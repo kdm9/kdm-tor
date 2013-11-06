@@ -1457,19 +1457,20 @@ consider_publishable_server(int force)
 }
 
 /** Return the port of the first active listener of type
- *  <b>listener_type</b>. */
-/** XXX not a very good interface. it's not reliable when there are
-    multiple listeners. */
+ * <b>listener_type</b> on the address <b>addr</b>, or any address if
+ * <b>addr</b> is NULL. */
 uint16_t
-router_get_active_listener_port_by_type_af(int listener_type,
-                                           sa_family_t family)
+router_get_active_listener_port_by_addr_type_af(const tor_addr_t *addr,
+                                                int listener_type,
+                                                sa_family_t family)
 {
   /* Iterate all connections, find one of the right kind and return
      the port. Not very sophisticated or fast, but effective. */
   smartlist_t *conns = get_connection_array();
   SMARTLIST_FOREACH_BEGIN(conns, connection_t *, conn) {
     if (conn->type == listener_type && !conn->marked_for_close &&
-        conn->socket_family == family) {
+        conn->socket_family == family && 
+        (! addr || tor_addr_compare(&conn->addr, addr, CMP_SEMANTIC))) {
       return conn->port;
     }
   } SMARTLIST_FOREACH_END(conn);
@@ -1499,9 +1500,13 @@ router_get_advertised_or_port_by_af(const or_options_t *options,
 
   /* If the port is in 'auto' mode, we have to use
      router_get_listener_port_by_type(). */
-  if (port == CFG_AUTO_PORT)
-    return router_get_active_listener_port_by_type_af(CONN_TYPE_OR_LISTENER,
-                                                      family);
+  if (port == CFG_AUTO_PORT) {
+    tor_addr_t *listener_addr = 
+      router_get_main_listener_addr_by_af(options, family);
+    return router_get_active_listener_port_by_addr_type_af(listener_addr,
+      CONN_TYPE_OR_LISTENER, family);
+    tor_free(listener_addr);
+  }
 
   return port;
 }
@@ -1521,8 +1526,9 @@ router_get_advertised_dir_port(const or_options_t *options, uint16_t dirport)
     return dirport;
 
   if (dirport_configured == CFG_AUTO_PORT)
-    return router_get_active_listener_port_by_type_af(CONN_TYPE_DIR_LISTENER,
-                                                      AF_INET);
+    return router_get_active_listener_port_by_addr_type_af(NULL,
+                                                           CONN_TYPE_DIR_LISTENER,
+                                                           AF_INET);
 
   return dirport_configured;
 }
@@ -1751,7 +1757,8 @@ router_pick_published_address(const or_options_t *options, uint32_t *addr)
 {
   *addr = get_last_resolved_addr();
   if (!*addr &&
-      resolve_my_address(LOG_INFO, options, addr, NULL, NULL) < 0) {
+      resolve_my_address(LOG_INFO, options, CONN_TYPE_OR_LISTENER, addr,
+                         NULL, NULL) < 0) {
     log_info(LD_CONFIG, "Could not determine our address locally. "
              "Checking if directory headers provide any hints.");
     if (router_guess_address_from_dir_headers(addr) < 0) {
@@ -1763,6 +1770,57 @@ router_pick_published_address(const or_options_t *options, uint32_t *addr)
   log_info(LD_CONFIG,"Success: chose address '%s'.", fmt_addr32(*addr));
   return 0;
 }
+
+/** From a list <b>ports</b> of port_cfg_t, find an entry with an IPv6
+ * address that we will use as our main IPv6 listener address, and return
+ * it, or return NULL if we cannot find any.
+ */
+port_cfg_t *
+router_get_main_ipv6_listener_address(const smartlist_t *ports)
+{
+  SMARTLIST_FOREACH_BEGIN(get_configured_ports(), port_cfg_t *, p) {
+    if (p->type == CONN_TYPE_OR_LISTENER &&
+        ! p->no_advertise &&
+        ! p->bind_ipv4_only &&
+        tor_addr_family(&p->addr) == AF_INET6) {
+      if (! tor_addr_is_internal(&p->addr, 0))
+        return p;
+      else {
+        char addrbuf[TOR_ADDR_BUF_LEN];
+        log_warn(LD_CONFIG,
+                  "Unable to use configured IPv6 address \"%s\" in a "
+                  "descriptor. Skipping it. "
+                  "Try specifying a globally reachable address explicitly. ",
+                  tor_addr_to_str(addrbuf, &p->addr, sizeof(addrbuf), 1));
+      }
+    }
+  } SMARTLIST_FOREACH_END(p);
+  return NULL;
+}
+
+/** Given <p>options</p>, returns the main listener address of address family
+ * <b>family</b>.
+ */
+tor_addr_t *
+router_get_main_listener_addr_by_af(const or_options_t * options,
+                                    sa_family_t family)
+{
+  tor_addr_t *listener_addr = tor_malloc_zero(sizeof(tor_addr_t));
+  uint32_t addr;
+  port_cfg_t * p;
+  switch (family) {
+    case AF_INET:
+      router_pick_published_address(options, &addr);
+      tor_addr_from_ipv4h(listener_addr, addr);
+      break;
+    case AF_INET6:
+      p = router_get_main_ipv6_listener_address(get_configured_ports());
+      tor_addr_copy(listener_addr, &p->addr);
+      break;
+  }
+  return listener_addr;
+}
+
 
 /** If <b>force</b> is true, or our descriptor is out-of-date, rebuild a fresh
  * routerinfo, signed server descriptor, and extra-info document for this OR.
@@ -1808,31 +1866,38 @@ router_rebuild_descriptor(int force)
                sizeof(curve25519_public_key_t));
 #endif
 
-  /* For now, at most one IPv6 or-address is being advertised. */
-  {
-    const port_cfg_t *ipv6_orport = NULL;
+  /* Find one IPv6 or-address that we will use as the main IPv6 listener address. */
+  const port_cfg_t *ipv6_orport =
+    router_get_main_ipv6_listener_address(get_configured_ports());
+  if (ipv6_orport) {
+    tor_addr_copy(&ri->ipv6_addr, &ipv6_orport->addr);
+    ri->ipv6_orport = ipv6_orport->port;
+  }
+  
+  /* If we are a bridge, find all the other listener addresses and populate
+   * more_or_listeners with them. */
+  if (options->BridgeRelay) {
+    if (ri->more_or_listeners) {
+      SMARTLIST_FOREACH(ri->more_or_listeners, tor_addr_port_t *, ap, tor_free(ap));
+      smartlist_clear(ri->more_or_listeners);
+    } else
+       ri->more_or_listeners = smartlist_new();
+    
     SMARTLIST_FOREACH_BEGIN(get_configured_ports(), const port_cfg_t *, p) {
       if (p->type == CONN_TYPE_OR_LISTENER &&
-          ! p->no_advertise &&
-          ! p->bind_ipv4_only &&
-          tor_addr_family(&p->addr) == AF_INET6) {
-        if (! tor_addr_is_internal(&p->addr, 0)) {
-          ipv6_orport = p;
-          break;
-        } else {
-          char addrbuf[TOR_ADDR_BUF_LEN];
-          log_warn(LD_CONFIG,
-                   "Unable to use configured IPv6 address \"%s\" in a "
-                   "descriptor. Skipping it. "
-                   "Try specifying a globally reachable address explicitly. ",
-                   tor_addr_to_str(addrbuf, &p->addr, sizeof(addrbuf), 1));
+        ! p->no_advertise) {
+        sa_family_t af = tor_addr_family(&p->addr);
+        if (((af == AF_INET  && ! p->bind_ipv6_only) ||
+             (af == AF_INET6 && ! p->bind_ipv4_only)) &&
+            tor_addr_compare(&p->addr, &ri->ipv6_addr, CMP_EXACT) != 0 &&
+            ! tor_addr_eq_ipv4h(&p->addr, ri->addr)) {
+          tor_addr_port_t *ap = tor_malloc(sizeof(tor_addr_port_t));
+          tor_addr_copy(&ap->addr, &p->addr);
+          ap->port = p->port;
+          smartlist_add(ri->more_or_listeners, ap);
         }
       }
     } SMARTLIST_FOREACH_END(p);
-    if (ipv6_orport) {
-      tor_addr_copy(&ri->ipv6_addr, &ipv6_orport->addr);
-      ri->ipv6_orport = ipv6_orport->port;
-    }
   }
 
   ri->identity_pkey = crypto_pk_dup_key(get_server_identity_key());
@@ -2141,7 +2206,8 @@ check_descriptor_ipaddress_changed(time_t now)
 
   /* XXXX ipv6 */
   prev = desc_routerinfo->addr;
-  if (resolve_my_address(LOG_INFO, options, &cur, &method, &hostname) < 0) {
+  if (resolve_my_address(LOG_INFO, options, CONN_TYPE_OR_LISTENER, &cur,
+                         &method, &hostname) < 0) {
     log_info(LD_CONFIG,"options->Address didn't resolve into an IP.");
     return;
   }
@@ -2199,7 +2265,8 @@ router_new_address_suggestion(const char *suggestion,
   /* XXXX ipv6 */
   cur = get_last_resolved_addr();
   if (cur ||
-      resolve_my_address(LOG_INFO, options, &cur, NULL, NULL) >= 0) {
+      resolve_my_address(LOG_INFO, options, CONN_TYPE_OR_LISTENER, &cur,
+                         NULL, NULL) >= 0) {
     /* We're all set -- we already know our address. Great. */
     tor_addr_from_ipv4h(&last_guessed_ip, cur); /* store it in case we
                                                    need it later */
@@ -2283,6 +2350,7 @@ router_dump_router_to_string(routerinfo_t *router,
   size_t onion_pkeylen, identity_pkeylen;
   char *family_line = NULL;
   char *extra_or_address = NULL;
+  char *more_or_listener_addresses = NULL;
   const or_options_t *options = get_options();
   smartlist_t *chunks = NULL;
   char *output = NULL;
@@ -2342,14 +2410,44 @@ router_dump_router_to_string(routerinfo_t *router,
     if (a) {
       tor_asprintf(&extra_or_address,
                    "or-address %s:%d\n", a, router->ipv6_orport);
-      log_debug(LD_OR, "My or-address line is <%s>", extra_or_address);
+      log_debug(LD_OR, "My IPv6 or-address line is <%s>", extra_or_address);
     }
+  }
+  
+  if (router->more_or_listeners) {
+    /* convert more_or_listeners to list of or-address lines first,
+     * then join them */
+    char addr[TOR_ADDR_BUF_LEN];
+    smartlist_t *more_or_address_lines = smartlist_new();
+    
+    SMARTLIST_FOREACH_BEGIN(router->more_or_listeners,
+                            const tor_addr_port_t *, ap) {
+      char *or_address = 
+        tor_malloc_zero(strlen("or-address ") + TOR_ADDR_BUF_LEN + 
+                        strlen(":00000"));
+      memset(addr, 0, TOR_ADDR_BUF_LEN);
+      const char *result =
+        tor_addr_to_str(addr, &ap->addr, sizeof(addr), 1);
+      if (result) {
+        tor_asprintf(&or_address, "or-address %s:%d", addr, ap->port);
+#ifdef DEBUG_ROUTER_DUMP_ROUTER_TO_STRING
+        log_debug(LD_OR, "An additional or-address line is <%s>", or_address);
+#endif
+        smartlist_add(more_or_address_lines, or_address);
+      }
+    } SMARTLIST_FOREACH_END(ap);
+    
+    more_or_listener_addresses =
+      smartlist_join_strings(more_or_address_lines, "\n", 1, NULL);
+    SMARTLIST_FOREACH(more_or_address_lines, char *, l, tor_free(l));
+    smartlist_free(more_or_address_lines);
   }
 
   chunks = smartlist_new();
   /* Generate the easy portion of the router descriptor. */
   smartlist_add_asprintf(chunks,
                     "router %s %s %d 0 %d\n"
+                    "%s"
                     "%s"
                     "platform %s\n"
                     "protocols Link 1 2 Circuit 1\n"
@@ -2366,6 +2464,7 @@ router_dump_router_to_string(routerinfo_t *router,
     router->or_port,
     decide_to_advertise_dirport(options, router->dir_port),
     extra_or_address ? extra_or_address : "",
+    more_or_listener_addresses ? more_or_listener_addresses : "",
     router->platform,
     published,
     fingerprint,
@@ -2499,19 +2598,26 @@ router_get_prim_orport(const routerinfo_t *router, tor_addr_port_t *ap_out)
 int
 router_has_addr(const routerinfo_t *router, const tor_addr_t *addr)
 {
-  return
-    tor_addr_eq_ipv4h(addr, router->addr) ||
-    tor_addr_eq(&router->ipv6_addr, addr);
+  tor_addr_port_t *ap = tor_addr_port_new(addr, 0);
+  int found = router_has_orport(router, ap);
+  tor_free(ap);
+  return found;
 }
 
 int
 router_has_orport(const routerinfo_t *router, const tor_addr_port_t *orport)
 {
-  return
-    (tor_addr_eq_ipv4h(&orport->addr, router->addr) &&
-     orport->port == router->or_port) ||
-    (tor_addr_eq(&orport->addr, &router->ipv6_addr) &&
-     orport->port == router->ipv6_orport);
+  smartlist_t *orports = router_get_all_orports(router);
+  int found = 0;
+  const int compare_port = orport->port != 0;
+  SMARTLIST_FOREACH_BEGIN(orports, tor_addr_port_t *, ap) {
+    if (tor_addr_compare(&orport->addr, &ap->addr, CMP_EXACT) == 0 &&
+        compare_port && orport->port == ap->port)
+      found = 1;
+    tor_free(ap);
+  } SMARTLIST_FOREACH_END(ap);
+  smartlist_free(orports);
+  return found;
 }
 
 /** Load the contents of <b>filename</b>, find the last line starting with
@@ -3064,6 +3170,8 @@ router_get_all_orports(const routerinfo_t *ri)
     ap->port = ri->or_port;
     smartlist_add(sl, ap);
   }
+  if (ri->more_or_listeners)
+    smartlist_add_all(sl, ri->more_or_listeners);
 
   return sl;
 }

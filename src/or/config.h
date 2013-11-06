@@ -28,6 +28,7 @@ setopt_err_t options_trial_assign(config_line_t *list, int use_defaults,
 
 uint32_t get_last_resolved_addr(void);
 int resolve_my_address(int warn_severity, const or_options_t *options,
+                       uint8_t listener_type,
                        uint32_t *addr_out,
                        const char **method_out, char **hostname_out);
 int is_local_addr(const tor_addr_t *addr);
