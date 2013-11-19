@@ -2037,11 +2037,11 @@ get_last_resolved_addr(void)
  * is set, then settle for anything). Return 0 if we can't find any suitable
  * address. */
 uint32_t
-find_good_addr_from_list(int notice_severity, smartlist_t *list, 
+find_good_addr_from_list(int notice_severity, smartlist_t *list,
                          uint8_t type, int allow_internal)
 {
   uint32_t considered_addr = 0;
- 
+
   SMARTLIST_FOREACH_BEGIN(list, uint32_t *, interface_ip_ptr) {
     if (! allow_internal && is_internal_IP(*interface_ip_ptr, 0)) {
       log_fn(notice_severity, LD_CONFIG,
@@ -2059,7 +2059,7 @@ find_good_addr_from_list(int notice_severity, smartlist_t *list,
             tor_addr_to_ipv4h(&port->addr) == *interface_ip_ptr) {
             log_fn(notice_severity, LD_CONFIG,
                    "Address '%s' has been configured explicitly by the user. "
-                   "Seems like a good choice, picking that one.", 
+                   "Seems like a good choice, picking that one.",
                    fmt_addr32(*interface_ip_ptr));
             return *interface_ip_ptr;
           }
@@ -2067,24 +2067,24 @@ find_good_addr_from_list(int notice_severity, smartlist_t *list,
       }
     }
   } SMARTLIST_FOREACH_END(interface_ip_ptr);
-  
+
   if (considered_addr) {
     if (configured_ports && smartlist_len(configured_ports) > 0)
       log_fn(notice_severity, LD_CONFIG,
              "Couldn't find an explicitly configured address, "
              "settling for '%s'.", fmt_addr32(considered_addr));
-    else
+    else {
       /* We got here from options_validate(), and we're just checking if we're
-       * globally reachable and can be a directory authority. This function will
-       * be called again when ports have been configured and we can pick the right
-       * address then. */
+       * globally reachable and can be a directory authority. This function
+       * will be called again when ports have been configured and we can pick
+       * the right address then. */
       log_fn(notice_severity, LD_CONFIG,
              "We have at least one usable address, that's enough right now.");
+    }
   }
-  
+
   return considered_addr;
 }
-
 
 /**
  * Use <b>options-\>Address</b> to guess our public IP address.
@@ -2167,7 +2167,8 @@ resolve_my_address(int warn_severity, const or_options_t *options,
         return -1;
       }
       from_interface = 1;
-      addr = find_good_addr_from_list(notice_severity, interface_ips, listener_type, 1);
+      addr = find_good_addr_from_list(notice_severity, interface_ips,
+                                      listener_type, 1);
       log_fn(notice_severity, LD_CONFIG, "Learned IP address '%s' for "
              "local interface. Using that.", fmt_addr32(addr));
       strlcpy(hostname, "<guessed from interfaces>", sizeof(hostname));
@@ -2178,14 +2179,15 @@ resolve_my_address(int warn_severity, const or_options_t *options,
         log_fn(notice_severity, LD_CONFIG, "Guessed local hostname '%s' "
                "resolves to a private IP address (%s). Trying something "
                "else.", hostname, fmt_addr32(addr));
-        
+
         smartlist_t *interface_ips = get_interface_address(warn_severity);
         if (! interface_ips) {
           log_fn(warn_severity, LD_CONFIG,
                  "Could not get local interface IP address. Too bad.");
         } else {
-          uint32_t good_addr = 
-            find_good_addr_from_list(notice_severity, interface_ips, listener_type, 0);
+          uint32_t good_addr =
+            find_good_addr_from_list(notice_severity, interface_ips,
+                                     listener_type, 0);
           if (good_addr) {
             addr = good_addr;
             from_interface = 1;
@@ -5086,7 +5088,7 @@ parse_dir_authority_line(const char *line, dirinfo_type_t required_type,
   dirinfo_type_t type = V2_DIRINFO;
   int is_not_hidserv_authority = 0, is_not_v2_authority = 0;
   double weight = 1.0;
-  
+
   items = smartlist_new();
   smartlist_split_string(items, line, NULL,
                          SPLIT_SKIP_SPACE|SPLIT_IGNORE_BLANK, -1);
@@ -6168,8 +6170,8 @@ get_first_listener_addrport_string(int listener_type)
          to iterate all listener connections and find out in which
          port it ended up listening: */
       if (cfg->port == CFG_AUTO_PORT) {
-        port = router_get_active_listener_port_by_addr_type_af(&cfg->addr, listener_type,
-                                                  tor_addr_family(&cfg->addr));
+        port = router_get_active_listener_port_by_addr_type_af(&cfg->addr,
+                 listener_type, tor_addr_family(&cfg->addr));
         if (!port)
           return NULL;
       } else {

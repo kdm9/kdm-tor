@@ -4260,8 +4260,8 @@ client_check_address_changed(tor_socket_t sock)
   SMARTLIST_FOREACH(outgoing_addrs, const tor_addr_t *, a_ptr,
                     if (tor_addr_eq(a_ptr, &out_addr))
                       return;
-                    );  
-  
+                    );
+
   switch (get_stable_interface_address6(LOG_WARN, family, &iface_addr)) {
     case -1:
       log_warn(LD_NET, "We're connecting with an address family we don't have "

@@ -56,7 +56,8 @@ int node_get_prim_orport(const node_t *node, tor_addr_port_t *ap_out);
 void node_get_pref_orport(const node_t *node, tor_addr_port_t *ap_out);
 void node_get_pref_ipv6_orport(const node_t *node, tor_addr_port_t *ap_out);
 int node_has_curve25519_onion_key(const node_t *node);
-void node_set_last_reachability(node_t *node, tor_addr_port_t *ap, time_t value);
+void node_set_last_reachability(node_t *node, tor_addr_port_t *ap,
+                                time_t value);
 int node_af_reachable_since(node_t *node, sa_family_t af, time_t time);
 time_t node_get_af_last_reachability(node_t *node, sa_family_t af);
 

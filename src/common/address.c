@@ -75,7 +75,7 @@
 #error We rely on AF_UNSPEC being 0. Let us know about your platform, please!
 #endif
 
-/* We use these for get_static_interface_address6(). */
+/* We use these for get_stable_interface_address6(). */
 static tor_addr_t *last_discovered_ipv4_address;
 static tor_addr_t *last_discovered_ipv6_address;
 
@@ -1360,8 +1360,13 @@ get_interface_address6(int severity, sa_family_t family)
 
     SMARTLIST_FOREACH(addrs, tor_addr_t *, a, tor_free(a));
     smartlist_free(addrs);
-    
-    return smartlist_len(return_addrs) > 0 ? return_addrs : NULL;
+
+    if (smartlist_len(return_addrs) > 0)
+      return return_addrs;
+    else {
+      smartlist_free(return_addrs);
+      return NULL;
+    }
   }
 
   /* Okay, the smart way is out. */
@@ -1414,7 +1419,7 @@ get_interface_address6(int severity, sa_family_t family)
  err:
   if (sock >= 0)
     tor_close_socket(sock);
-  if (! r)
+  if (! r) /* We errored. */
     tor_free(addr);
   return r;
 }
@@ -1422,7 +1427,8 @@ get_interface_address6(int severity, sa_family_t family)
 /** Return the first address of a specific address family from a list of
  * addresses, or NULL if there is no such address in the list. */
 tor_addr_t *
-get_first_address_by_af(smartlist_t *list, sa_family_t family) {
+get_first_address_by_af(smartlist_t *list, sa_family_t family)
+{
   tor_addr_t *addr;
   SMARTLIST_FOREACH_BEGIN(list, tor_addr_t *, a) {
     if (tor_addr_family(a) == family) {
@@ -1434,22 +1440,24 @@ get_first_address_by_af(smartlist_t *list, sa_family_t family) {
   return NULL;
 }
 
-/** Set *<b>addr</b> to a single address of address family <b>family</b> retrieved
- * from get_interface_address6() and change it only if we must, i.e. if it's no
- * longer in the list. 
- * Returns -1 if we know of no address of this family, 0 if we know of an address
- * and knew about it previously, and 1 if we know about an address, but we had to
- * change it from a previous one. */
+/** Set *<b>addr</b> to a single address of address family <b>family</b>
+ * retrieved from get_interface_address6() and change it only if we must, i.e.
+ * if it's no longer in the list.
+ * Returns -1 if we know of no address of this family, 0 if we know of an
+ * address and knew about it previously, and 1 if we know about an address, but
+ * we had to change it from a previous one. */
 int
-get_stable_interface_address6(int severity, sa_family_t family, tor_addr_t* addr) {
+get_stable_interface_address6(int severity, sa_family_t family,
+                              tor_addr_t* addr)
+{
   smartlist_t *list = get_interface_address6(severity, family);
   tor_addr_t *first_address;
-  
+
   if (smartlist_len(list) <= 0)
     return -1;
   if (! (first_address = get_first_address_by_af(list, family)))
     return -1;
-  
+
   /* If we don't know any address yet, pick the one we've discovered above. */
   if (family == AF_INET && ! last_discovered_ipv4_address) {
     last_discovered_ipv4_address = first_address;
@@ -1460,7 +1468,7 @@ get_stable_interface_address6(int severity, sa_family_t family, tor_addr_t* addr
     tor_addr_copy(addr, first_address);
     return 1;
   }
-  
+
   /* If the previous address is in the list, stick to it. */
   switch (family) {
     case AF_INET:
@@ -1482,7 +1490,7 @@ get_stable_interface_address6(int severity, sa_family_t family, tor_addr_t* addr
       } SMARTLIST_FOREACH_END(a);
       break;
   }
-  
+
   /* We're still here, so we have entirely new addresses. */
   if (family == AF_INET) {
     tor_free(last_discovered_ipv4_address);
@@ -1739,7 +1747,7 @@ smartlist_t *
 get_interface_address(int severity)
 {
   smartlist_t *r;
-  
+
   r = get_interface_address6(severity, AF_INET);
   if (r != NULL) {
     smartlist_t *addrs = smartlist_new();
@@ -1748,9 +1756,10 @@ get_interface_address(int severity)
       *addr = tor_addr_to_ipv4h(local_addr);
       smartlist_add(addrs, addr);
     } SMARTLIST_FOREACH_END(local_addr);
+    smartlist_free(r);
     return addrs;
   }
-  
+
   return NULL;
 }
 

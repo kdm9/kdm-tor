@@ -2072,11 +2072,11 @@ typedef struct {
   uint16_t ipv6_orport;
 
   /** Additional tor_addr_port_t we're listening on. */
-  /* XXXX#9729 We're not self-testing these, or use them in any other way. 
-   * Their only purpose is to be advertised to bridge authorities. 
+  /* XXXX#9729 We're not self-testing these, or use them in any other way.
+   * Their only purpose is to be advertised to bridge authorities.
    * They _are_ being tested by the bridge authorities however. */
   smartlist_t *more_or_listeners;
-  
+
   crypto_pk_t *onion_pkey; /**< Public RSA key for onions. */
   crypto_pk_t *identity_pkey;  /**< Public RSA key for signing. */
   /** Public curve25519 key for onions */
@@ -2385,7 +2385,8 @@ typedef struct node_t {
   /* The below items are used only by authdirservers for
    * reachability testing. */
 
-  /** When was the last time we could reach this OR? List of addr_reachability_t. */
+  /** When was the last time we could reach this OR?
+   * List of addr_reachability_t. */
   smartlist_t *last_reachable;
 
 } node_t;
@@ -5126,5 +5127,4 @@ typedef struct tor_version_t {
 } tor_version_t;
 
 #endif
-
 

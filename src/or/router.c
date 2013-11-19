@@ -1469,8 +1469,8 @@ router_get_active_listener_port_by_addr_type_af(const tor_addr_t *addr,
   smartlist_t *conns = get_connection_array();
   SMARTLIST_FOREACH_BEGIN(conns, connection_t *, conn) {
     if (conn->type == listener_type && !conn->marked_for_close &&
-        conn->socket_family == family && 
-        (! addr || tor_addr_compare(&conn->addr, addr, CMP_SEMANTIC))) {
+        conn->socket_family == family &&
+        (! addr || tor_addr_compare(&conn->addr, addr, CMP_SEMANTIC) == 0)) {
       return conn->port;
     }
   } SMARTLIST_FOREACH_END(conn);
@@ -1501,9 +1501,9 @@ router_get_advertised_or_port_by_af(const or_options_t *options,
   /* If the port is in 'auto' mode, we have to use
      router_get_listener_port_by_type(). */
   if (port == CFG_AUTO_PORT) {
-    tor_addr_t *listener_addr = 
+    tor_addr_t *listener_addr =
       router_get_main_listener_addr_by_af(options, family);
-    return router_get_active_listener_port_by_addr_type_af(listener_addr,
+    port = router_get_active_listener_port_by_addr_type_af(listener_addr,
       CONN_TYPE_OR_LISTENER, family);
     tor_free(listener_addr);
   }
@@ -1527,8 +1527,7 @@ router_get_advertised_dir_port(const or_options_t *options, uint16_t dirport)
 
   if (dirport_configured == CFG_AUTO_PORT)
     return router_get_active_listener_port_by_addr_type_af(NULL,
-                                                           CONN_TYPE_DIR_LISTENER,
-                                                           AF_INET);
+      CONN_TYPE_DIR_LISTENER, AF_INET);
 
   return dirport_configured;
 }
@@ -1821,7 +1820,6 @@ router_get_main_listener_addr_by_af(const or_options_t * options,
   return listener_addr;
 }
 
-
 /** If <b>force</b> is true, or our descriptor is out-of-date, rebuild a fresh
  * routerinfo, signed server descriptor, and extra-info document for this OR.
  * Return 0 on success, -1 on temporary error.
@@ -1866,23 +1864,25 @@ router_rebuild_descriptor(int force)
                sizeof(curve25519_public_key_t));
 #endif
 
-  /* Find one IPv6 or-address that we will use as the main IPv6 listener address. */
+  /* Find one IPv6 or-address that we will use as the main IPv6
+   * listener address. */
   const port_cfg_t *ipv6_orport =
     router_get_main_ipv6_listener_address(get_configured_ports());
   if (ipv6_orport) {
     tor_addr_copy(&ri->ipv6_addr, &ipv6_orport->addr);
     ri->ipv6_orport = ipv6_orport->port;
   }
-  
+
   /* If we are a bridge, find all the other listener addresses and populate
    * more_or_listeners with them. */
   if (options->BridgeRelay) {
     if (ri->more_or_listeners) {
-      SMARTLIST_FOREACH(ri->more_or_listeners, tor_addr_port_t *, ap, tor_free(ap));
+      SMARTLIST_FOREACH(ri->more_or_listeners, tor_addr_port_t *, ap,
+                        tor_free(ap));
       smartlist_clear(ri->more_or_listeners);
     } else
        ri->more_or_listeners = smartlist_new();
-    
+
     SMARTLIST_FOREACH_BEGIN(get_configured_ports(), const port_cfg_t *, p) {
       if (p->type == CONN_TYPE_OR_LISTENER &&
         ! p->no_advertise) {
@@ -2413,17 +2413,17 @@ router_dump_router_to_string(routerinfo_t *router,
       log_debug(LD_OR, "My IPv6 or-address line is <%s>", extra_or_address);
     }
   }
-  
+
   if (router->more_or_listeners) {
     /* convert more_or_listeners to list of or-address lines first,
      * then join them */
     char addr[TOR_ADDR_BUF_LEN];
     smartlist_t *more_or_address_lines = smartlist_new();
-    
+
     SMARTLIST_FOREACH_BEGIN(router->more_or_listeners,
                             const tor_addr_port_t *, ap) {
-      char *or_address = 
-        tor_malloc_zero(strlen("or-address ") + TOR_ADDR_BUF_LEN + 
+      char *or_address =
+        tor_malloc_zero(strlen("or-address ") + TOR_ADDR_BUF_LEN +
                         strlen(":00000"));
       memset(addr, 0, TOR_ADDR_BUF_LEN);
       const char *result =
@@ -2436,7 +2436,7 @@ router_dump_router_to_string(routerinfo_t *router,
         smartlist_add(more_or_address_lines, or_address);
       }
     } SMARTLIST_FOREACH_END(ap);
-    
+
     more_or_listener_addresses =
       smartlist_join_strings(more_or_address_lines, "\n", 1, NULL);
     SMARTLIST_FOREACH(more_or_address_lines, char *, l, tor_free(l));

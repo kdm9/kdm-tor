@@ -2792,7 +2792,8 @@ routerinfo_free(routerinfo_t *router)
     smartlist_free(router->declared_family);
   }
   if (router->more_or_listeners) {
-    SMARTLIST_FOREACH(router->more_or_listeners, tor_addr_port_t *, ap, tor_free(ap));
+    SMARTLIST_FOREACH(router->more_or_listeners, tor_addr_port_t *, ap,
+                      tor_free(ap));
     smartlist_free(router->more_or_listeners);
   }
   addr_policy_list_free(router->exit_policy);
