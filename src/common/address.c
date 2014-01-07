@@ -76,8 +76,8 @@
 #endif
 
 /* We use these for get_stable_interface_address6(). */
-static tor_addr_t *last_discovered_ipv4_address;
-static tor_addr_t *last_discovered_ipv6_address;
+static tor_addr_t *last_discovered_ipv4_address = NULL;
+static tor_addr_t *last_discovered_ipv6_address = NULL;
 
 /** Convert the tor_addr_t in <b>a</b>, with port in <b>port</b>, into a
  * sockaddr object in *<b>sa_out</b> of object size <b>len</b>.  If not enough
@@ -1330,7 +1330,7 @@ tor_addr_is_multicast(const tor_addr_t *a)
   return 0;
 }
 
-/** Return a list of IP addresses of whatever interfaces connect to the
+/** Return a new list of IP addresses of whatever interfaces connect to the
  * Internet. These addresses should only be used in checking whether our
  * addresses have changed. Return when we can't find an address.
  */
@@ -1391,6 +1391,7 @@ get_interface_address6(int severity, sa_family_t family)
     sin->sin_family = AF_INET;
     sin->sin_addr.s_addr = htonl(0x12000001); /* 18.0.0.1 */
   } else {
+    tor_free(addr);
     return NULL;
   }
   if (sock < 0) {
@@ -1426,16 +1427,12 @@ get_interface_address6(int severity, sa_family_t family)
 
 /** Return the first address of a specific address family from a list of
  * addresses, or NULL if there is no such address in the list. */
-tor_addr_t *
+const tor_addr_t *
 get_first_address_by_af(smartlist_t *list, sa_family_t family)
 {
-  tor_addr_t *addr;
   SMARTLIST_FOREACH_BEGIN(list, tor_addr_t *, a) {
-    if (tor_addr_family(a) == family) {
-      addr = tor_malloc(sizeof(tor_addr_t));
-      tor_addr_copy(addr, a);
-      return addr;
-    }
+    if (tor_addr_family(a) == family)
+      return a;
   } SMARTLIST_FOREACH_END(a);
   return NULL;
 }
@@ -1451,21 +1448,29 @@ get_stable_interface_address6(int severity, sa_family_t family,
                               tor_addr_t* addr)
 {
   smartlist_t *list = get_interface_address6(severity, family);
-  tor_addr_t *first_address;
+  const tor_addr_t *first_address;
 
-  if (smartlist_len(list) <= 0)
+  if (smartlist_len(list) <= 0) {
+    tor_free(list);
     return -1;
-  if (! (first_address = get_first_address_by_af(list, family)))
+  }
+  if (! (first_address = get_first_address_by_af(list, family))) {
+    tor_free(list);
     return -1;
+  }
 
   /* If we don't know any address yet, pick the one we've discovered above. */
   if (family == AF_INET && ! last_discovered_ipv4_address) {
-    last_discovered_ipv4_address = first_address;
+    last_discovered_ipv4_address = tor_malloc(sizeof(tor_addr_t));
+    tor_addr_copy(last_discovered_ipv4_address, first_address);
     tor_addr_copy(addr, first_address);
+    tor_free(list);
     return 1;
   } else if (family == AF_INET6 && ! last_discovered_ipv6_address) {
-    last_discovered_ipv6_address = first_address;
+    last_discovered_ipv6_address = tor_malloc(sizeof(tor_addr_t));
+    tor_addr_copy(last_discovered_ipv6_address, first_address);
     tor_addr_copy(addr, first_address);
+    tor_free(list);
     return 1;
   }
 
@@ -1475,7 +1480,7 @@ get_stable_interface_address6(int severity, sa_family_t family,
       SMARTLIST_FOREACH_BEGIN(list, tor_addr_t *, a) {
         if (tor_addr_eq(last_discovered_ipv4_address, a)) {
           tor_addr_copy(addr, a);
-          tor_free(first_address);
+          tor_free(list);
           return 0;
         }
       } SMARTLIST_FOREACH_END(a);
@@ -1484,22 +1489,22 @@ get_stable_interface_address6(int severity, sa_family_t family,
       SMARTLIST_FOREACH_BEGIN(list, tor_addr_t *, a) {
         if (tor_addr_eq(last_discovered_ipv6_address, a)) {
           tor_addr_copy(addr, a);
-        tor_free(first_address);
+          tor_free(list);
           return 0;
         }
       } SMARTLIST_FOREACH_END(a);
       break;
   }
 
-  /* We're still here, so we have entirely new addresses. */
-  if (family == AF_INET) {
-    tor_free(last_discovered_ipv4_address);
-    last_discovered_ipv4_address = first_address;
-  } else if (family == AF_INET6) {
-    tor_free(last_discovered_ipv6_address);
-    last_discovered_ipv6_address = first_address;
-  }
+  /* We're still here, so we knew about an address previously, but now have
+   * entirely new addresses. */
+  if (family == AF_INET)
+    tor_addr_copy(last_discovered_ipv4_address, first_address);
+  else if (family == AF_INET6)
+    tor_addr_copy(last_discovered_ipv6_address, first_address);
+
   tor_addr_copy(addr, first_address);
+  tor_free(list);
   return 1;
 }
 
@@ -1735,32 +1740,6 @@ tor_dup_ip(uint32_t addr)
   in.s_addr = htonl(addr);
   tor_inet_ntop(AF_INET, &in, buf, sizeof(buf));
   return tor_strdup(buf);
-}
-
-/**
- * Return a list of host-order IPv4 addresses (if any) of whatever
- * interface connects to the Internet.  These addresses should only be used in
- * checking whether our addresses have changed.  Return when we can't
- * find an address.
- */
-smartlist_t *
-get_interface_address(int severity)
-{
-  smartlist_t *r;
-
-  r = get_interface_address6(severity, AF_INET);
-  if (r != NULL) {
-    smartlist_t *addrs = smartlist_new();
-    SMARTLIST_FOREACH_BEGIN(r, tor_addr_t *, local_addr) {
-      uint32_t *addr = tor_malloc(sizeof(uint32_t));
-      *addr = tor_addr_to_ipv4h(local_addr);
-      smartlist_add(addrs, addr);
-    } SMARTLIST_FOREACH_END(local_addr);
-    smartlist_free(r);
-    return addrs;
-  }
-
-  return NULL;
 }
 
 /** Return true if we can tell that <b>name</b> is a canonical name for the

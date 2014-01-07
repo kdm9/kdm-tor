@@ -1774,7 +1774,7 @@ router_pick_published_address(const or_options_t *options, uint32_t *addr)
  * address that we will use as our main IPv6 listener address, and return
  * it, or return NULL if we cannot find any.
  */
-port_cfg_t *
+const port_cfg_t *
 router_get_main_ipv6_listener_address(const smartlist_t *ports)
 {
   SMARTLIST_FOREACH_BEGIN(get_configured_ports(), port_cfg_t *, p) {
@@ -1798,7 +1798,7 @@ router_get_main_ipv6_listener_address(const smartlist_t *ports)
 }
 
 /** Given <p>options</p>, returns the main listener address of address family
- * <b>family</b>.
+ * <b>family</b> as a new tor_addr_t.
  */
 tor_addr_t *
 router_get_main_listener_addr_by_af(const or_options_t * options,
@@ -1806,7 +1806,7 @@ router_get_main_listener_addr_by_af(const or_options_t * options,
 {
   tor_addr_t *listener_addr = tor_malloc_zero(sizeof(tor_addr_t));
   uint32_t addr;
-  port_cfg_t * p;
+  const port_cfg_t * p;
   switch (family) {
     case AF_INET:
       router_pick_published_address(options, &addr);

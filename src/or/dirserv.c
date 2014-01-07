@@ -3715,10 +3715,11 @@ dirserv_single_reachability_test(time_t now, routerinfo_t *router)
     // We don't want to get crazy checking lots of addresses, so maybe
     // just the equivalent of a /29.
     const int MAX_ADDRESS_CHECKS = 7;
-    if (smartlist_len(router->more_or_listeners) > MAX_ADDRESS_CHECKS)
+    if (smartlist_len(router->more_or_listeners) > MAX_ADDRESS_CHECKS) {
       /* There is no point in checking any addresses because it is never
          going to be the case that all are going to be found reachable. */
       return;
+    }
 
     SMARTLIST_FOREACH_BEGIN(router->more_or_listeners, tor_addr_port_t *, l) {
       if (! (tor_addr_compare(&l->addr, &router_addr, CMP_EXACT) == 0 &&
