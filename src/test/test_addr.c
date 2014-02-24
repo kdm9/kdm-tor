@@ -724,27 +724,6 @@ done:
 }
 
 static void
-test_get_interface_address(void *data)
-{
-  smartlist_t *ipv4s;
-  /* get interface addresses w/ IPv4 func */
-  ipv4s = get_interface_address(LOG_DEBUG);
-  if (ipv4s != NULL) {
-    SMARTLIST_FOREACH_BEGIN(ipv4s, uint32_t *, a) {
-        tor_addr_t *tmp = tor_calloc(1, sizeof(*tmp));
-        tt_int_op((*a), >, 0);
-        tor_addr_from_ipv4n(tmp, (*a));
-        tt_assert(tor_addr_is_v4(tmp));
-        tor_free(tmp);
-        /* More tests here */
-    } SMARTLIST_FOREACH_END(a);
-  }
-done:
-  if(ipv4s) SMARTLIST_FOREACH(ipv4s, uint32_t *, a, tor_free(a));
-  smartlist_free(ipv4s);
-}
-
-static void
 test_get_interface_address6(void *data)
 {
   smartlist_t *ipv6s = NULL, *ipv4s = NULL;
@@ -1117,7 +1096,6 @@ struct testcase_t addr_tests[] = {
   { "sockaddr_to_str", test_addr_sockaddr_to_str, 0, NULL, NULL },
   { "is_loopback", test_addr_is_loopback, 0, NULL, NULL },
   { "get_first_addr_by_af", test_get_first_address_by_af, 0, NULL, NULL},
-  { "get_interface_address", test_get_interface_address, 0, NULL, NULL},
   { "get_interface_address6", test_get_interface_address6, 0, NULL, NULL},
   { "get_stable_interface_address6", test_get_stable_interface_address6, 0, NULL, NULL},
   END_OF_TESTCASES
