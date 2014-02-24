@@ -185,7 +185,6 @@ test_addr_ip6_helpers(void)
   char rbuf[REVERSE_LOOKUP_NAME_BUF_LEN];
   struct in6_addr a1, a2;
   tor_addr_t t1, t2;
-  smartlist_t *s1, *s2;
   int r, i;
   uint16_t port1, port2;
   maskbits_t mask;
@@ -720,21 +719,64 @@ test_addr_ip6_helpers(void)
 
   test_assert(sizeof(tor_addr_t) >= sizeof(struct in6_addr));
 
-  /* get interface addresses */
-  s1 = get_interface_address6(LOG_DEBUG, AF_INET);
-  s2 = get_interface_address6(LOG_DEBUG, AF_INET6);
-
-  SMARTLIST_FOREACH_BEGIN(s1, tor_addr_t *, a) {
-    TT_BLATHER(("v4 address: %s (family=%d)", fmt_addr(a),
-                tor_addr_family(a)));
-  } SMARTLIST_FOREACH_END(a);
-  SMARTLIST_FOREACH_BEGIN(s2, tor_addr_t *, a) {
-    TT_BLATHER(("v6 address: %s (family=%d)", fmt_addr(a),
-                tor_addr_family(a)));
-  } SMARTLIST_FOREACH_END(a);
- done:
+done:
   ;
 }
+
+static void
+test_get_interface_address(void *data)
+{
+  smartlist_t *ipv4s;
+  /* get interface addresses w/ IPv4 func */
+  ipv4s = get_interface_address(LOG_DEBUG);
+  if (ipv4s != NULL) {
+    SMARTLIST_FOREACH_BEGIN(ipv4s, uint32_t *, a) {
+        tor_addr_t *tmp = tor_calloc(1, sizeof(*tmp));
+        tt_int_op((*a), >, 0);
+        tor_addr_from_ipv4n(tmp, (*a));
+        tt_assert(tor_addr_is_v4(tmp));
+        tor_free(tmp);
+        /* More tests here */
+    } SMARTLIST_FOREACH_END(a);
+  }
+done:
+  if(ipv4s) SMARTLIST_FOREACH(ipv4s, uint32_t *, a, tor_free(a));
+  smartlist_free(ipv4s);
+}
+
+static void
+test_get_interface_address6(void *data)
+{
+  smartlist_t *ipv6s = NULL, *ipv4s = NULL;
+  /* get ipv4 addrs using the get_interface_address6 fn */
+  ipv4s = get_interface_address6(LOG_DEBUG, AF_INET);
+  if (ipv4s != NULL) {
+    SMARTLIST_FOREACH(ipv4s, tor_addr_t *, a,
+            tt_int_op(tor_addr_family(a), ==, AF_INET));
+    /* More tests here */
+    SMARTLIST_FOREACH_BEGIN(ipv4s, tor_addr_t *, a) {
+      TT_BLATHER(("v6 address: %s (family=%d)", fmt_addr(a),
+                  tor_addr_family(a)));
+    } SMARTLIST_FOREACH_END(a);
+  }
+  /* Get 1pv6 addrs */
+  ipv6s = get_interface_address6(LOG_DEBUG, AF_INET6);
+  if (ipv6s != NULL) {
+    SMARTLIST_FOREACH(ipv6s, tor_addr_t *, a,
+            tt_int_op(tor_addr_family(a), ==, AF_INET6));
+    /* More tests here */
+    SMARTLIST_FOREACH_BEGIN(ipv6s, tor_addr_t *, a) {
+      TT_BLATHER(("v6 address: %s (family=%d)", fmt_addr(a),
+                  tor_addr_family(a)));
+    } SMARTLIST_FOREACH_END(a);
+  }
+done:
+  if(ipv6s) SMARTLIST_FOREACH(ipv6s, tor_addr_t *, a, tor_free(a));
+  smartlist_free(ipv6s);
+  if(ipv4s) SMARTLIST_FOREACH(ipv4s, tor_addr_t *, a, tor_free(a));
+  smartlist_free(ipv4s);
+}
+
 
 /** Test tor_addr_port_parse(). */
 static void
@@ -975,6 +1017,93 @@ test_addr_is_loopback(void *data)
   ;
 }
 
+
+static void
+test_get_first_address_by_af(void *data)
+{
+  smartlist_t *addrlist = smartlist_new();
+  tor_addr_t *tmpaddr = tor_calloc(1, sizeof(*tmpaddr));
+  tor_addr_t *resaddr = NULL;
+
+  /* Add 3 addresses to smartlist: two IPv4, one IPv6. */
+  tor_addr_from_ipv4n(tmpaddr, 13<<24 | 11<<16 | 9<<8 | 7);  /* 13.11.9.7 */
+  smartlist_add(addrlist, tmpaddr);
+
+  tmpaddr = tor_calloc(1, sizeof(*tmpaddr));
+  tor_addr_from_ipv4n(tmpaddr, 127<<24 | 1);  /* 127.0.0.1 */
+  tmpaddr->family = AF_UNSPEC;
+  smartlist_add(addrlist, tmpaddr);
+
+  const char ip6_addr[32] = {0,1,3,5, 6,7,4,5, 7,9,2,5, 6,2,4,6};
+  tmpaddr = tor_calloc(1, sizeof(*tmpaddr));
+  tor_addr_from_ipv6_bytes(tmpaddr, ip6_addr);
+  smartlist_add(addrlist, tmpaddr);
+
+  resaddr = get_first_address_by_af(addrlist, AF_INET);
+  /* Should be the first addr, 13.11.9.7 */
+  tt_assert(tor_addr_eq(resaddr, (tor_addr_t*) smartlist_get(addrlist, 0)));
+  tt_int_op(tor_addr_family(resaddr), ==, AF_INET);
+  tor_free(resaddr);
+
+  resaddr = get_first_address_by_af(addrlist, AF_INET6);
+  /* Should be the IPv6 addr */
+  tt_assert(tor_addr_eq(resaddr, (tor_addr_t*) smartlist_get(addrlist, 2)));
+  tt_int_op(tor_addr_family(resaddr), ==, AF_INET6);
+  done:
+    tor_free(resaddr);
+/*     if (addrlist) SMARTLIST_FOREACH(addrlist, tor_addr_t *, a, printf("%p\n", a)); */
+    if (addrlist) SMARTLIST_FOREACH(addrlist, tor_addr_t *, a, tor_free(a));
+    smartlist_free(addrlist);
+}
+
+static void
+test_get_stable_interface_address6(void *data)
+{
+  int res = 0;
+  tor_addr_t *addr = NULL, *old_addr = NULL;
+  addr = tor_calloc(1, sizeof(*addr));
+  old_addr = tor_calloc(1, sizeof(*old_addr));
+
+  /* Don't have an addr, ensure 1 is returned */
+  res = get_stable_interface_address6(LOG_DEBUG, AF_INET, addr);
+  tt_int_op(res, ==, 1);
+
+  /* Should have an addr, ensure */
+  memcpy(old_addr, addr, sizeof(*addr));
+  memset(addr, 0, sizeof(*addr));
+  res = get_stable_interface_address6(LOG_DEBUG, AF_INET, addr);
+  tt_int_op(res, ==, 0);
+  tt_assert(tor_addr_eq(addr, old_addr));
+
+  /****************** Do it all again with AF_INET6 *******************/
+  memset(addr, 0, sizeof(*addr));
+  memset(old_addr, 0, sizeof(*old_addr));
+
+  /* Don't have an addr, ensure 1 is returned */
+  res = get_stable_interface_address6(LOG_DEBUG, AF_INET6, addr);
+  tt_int_op(res, ==, 1);
+
+  /* Should have an addr, ensure */
+  memcpy(old_addr, addr, sizeof(*addr));
+  memset(addr, 0, sizeof(*addr));
+  res = get_stable_interface_address6(LOG_DEBUG, AF_INET6, addr);
+  tt_int_op(res, ==, 0);
+  tt_assert(tor_addr_eq(addr, old_addr));
+
+  /******************* Try with AF_UNSPEC & AF_UNIX ******************/
+  /* AF_UNSPEC shoudn't have any addresses */
+  memset(addr, 0, sizeof(*addr));
+  res = get_stable_interface_address6(LOG_DEBUG, AF_UNSPEC, addr);
+  tt_int_op(res, ==, -1);
+
+  memset(addr, 0, sizeof(*addr));
+  res = get_stable_interface_address6(LOG_DEBUG, AF_UNIX, addr);
+  tt_int_op(res, ==, -1);
+done:
+  tor_free(addr);
+  tor_free(old_addr);
+}
+
 #define ADDR_LEGACY(name)                                               \
   { #name, legacy_test_helper, 0, &legacy_setup, test_addr_ ## name }
 
@@ -987,6 +1116,10 @@ struct testcase_t addr_tests[] = {
   { "dup_ip", test_addr_dup_ip, 0, NULL, NULL },
   { "sockaddr_to_str", test_addr_sockaddr_to_str, 0, NULL, NULL },
   { "is_loopback", test_addr_is_loopback, 0, NULL, NULL },
+  { "get_first_addr_by_af", test_get_first_address_by_af, 0, NULL, NULL},
+  { "get_interface_address", test_get_interface_address, 0, NULL, NULL},
+  { "get_interface_address6", test_get_interface_address6, 0, NULL, NULL},
+  { "get_stable_interface_address6", test_get_stable_interface_address6, 0, NULL, NULL},
   END_OF_TESTCASES
 };
 
