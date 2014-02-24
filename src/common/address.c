@@ -1453,19 +1453,30 @@ get_stable_interface_address6(int severity, sa_family_t family,
   smartlist_t *list = get_interface_address6(severity, family);
   tor_addr_t *first_address;
 
-  if (smartlist_len(list) <= 0)
+  if (list == NULL)
+    return -1; /* Avoid null dereferencing w/ list == NULL */
+  if (smartlist_len(list) <= 0) {
+    smartlist_free(list);
     return -1;
-  if (! (first_address = get_first_address_by_af(list, family)))
+  }
+  if (! (first_address = get_first_address_by_af(list, family))) {
+    SMARTLIST_FOREACH(list, tor_addr_t *, a, tor_free(a));
+    smartlist_free(list);
     return -1;
+  }
 
   /* If we don't know any address yet, pick the one we've discovered above. */
   if (family == AF_INET && ! last_discovered_ipv4_address) {
     last_discovered_ipv4_address = first_address;
     tor_addr_copy(addr, first_address);
+    SMARTLIST_FOREACH(list, tor_addr_t *, a, tor_free(a));
+    smartlist_free(list);
     return 1;
   } else if (family == AF_INET6 && ! last_discovered_ipv6_address) {
     last_discovered_ipv6_address = first_address;
     tor_addr_copy(addr, first_address);
+    SMARTLIST_FOREACH(list, tor_addr_t *, a, tor_free(a));
+    smartlist_free(list);
     return 1;
   }
 
@@ -1476,6 +1487,8 @@ get_stable_interface_address6(int severity, sa_family_t family,
         if (tor_addr_eq(last_discovered_ipv4_address, a)) {
           tor_addr_copy(addr, a);
           tor_free(first_address);
+          SMARTLIST_FOREACH(list, tor_addr_t *, a, tor_free(a));
+          smartlist_free(list);
           return 0;
         }
       } SMARTLIST_FOREACH_END(a);
@@ -1484,7 +1497,9 @@ get_stable_interface_address6(int severity, sa_family_t family,
       SMARTLIST_FOREACH_BEGIN(list, tor_addr_t *, a) {
         if (tor_addr_eq(last_discovered_ipv6_address, a)) {
           tor_addr_copy(addr, a);
-        tor_free(first_address);
+          tor_free(first_address);
+          SMARTLIST_FOREACH(list, tor_addr_t *, a, tor_free(a));
+          smartlist_free(list);
           return 0;
         }
       } SMARTLIST_FOREACH_END(a);
@@ -1500,6 +1515,10 @@ get_stable_interface_address6(int severity, sa_family_t family,
     last_discovered_ipv6_address = first_address;
   }
   tor_addr_copy(addr, first_address);
+  if (list) {
+    SMARTLIST_FOREACH(list, tor_addr_t *, a, tor_free(a));
+    smartlist_free(list);
+  }
   return 1;
 }
 
@@ -1755,6 +1774,7 @@ get_interface_address(int severity)
       uint32_t *addr = tor_malloc(sizeof(uint32_t));
       *addr = tor_addr_to_ipv4h(local_addr);
       smartlist_add(addrs, addr);
+      tor_free(local_addr); /* Avoid memory leak, free tor_addr_t */
     } SMARTLIST_FOREACH_END(local_addr);
     smartlist_free(r);
     return addrs;
