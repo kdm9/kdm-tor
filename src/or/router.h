@@ -94,7 +94,7 @@ int router_extrainfo_digest_is_me(const char *digest);
 int router_is_me(const routerinfo_t *router);
 int router_fingerprint_is_me(const char *fp);
 int router_pick_published_address(const or_options_t *options, uint32_t *addr);
-port_cfg_t * router_get_main_ipv6_listener_address(
+const port_cfg_t * router_get_main_ipv6_listener_address(
   const smartlist_t *ports);
 tor_addr_t * router_get_main_listener_addr_by_af(const or_options_t * options,
                                                  sa_family_t af);
