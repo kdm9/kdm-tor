@@ -230,7 +230,7 @@ char *tor_dup_ip(uint32_t addr) ATTR_MALLOC;
 
 tor_addr_port_t *tor_addr_port_new(const tor_addr_t *addr, uint16_t port);
 
-tor_addr_t *get_first_address_by_af(smartlist_t *list, sa_family_t family);
+const tor_addr_t *get_first_address_by_af(smartlist_t *list, sa_family_t family);
 
 #endif
 

@@ -1485,7 +1485,6 @@ get_stable_interface_address6(int severity, sa_family_t family,
       SMARTLIST_FOREACH_BEGIN(list, tor_addr_t *, a) {
         if (tor_addr_eq(last_discovered_ipv4_address, a)) {
           tor_addr_copy(addr, a);
-          tor_free(first_address);
           SMARTLIST_FOREACH(list, tor_addr_t *, a, tor_free(a));
           smartlist_free(list);
           return 0;
@@ -1496,7 +1495,6 @@ get_stable_interface_address6(int severity, sa_family_t family,
       SMARTLIST_FOREACH_BEGIN(list, tor_addr_t *, a) {
         if (tor_addr_eq(last_discovered_ipv6_address, a)) {
           tor_addr_copy(addr, a);
-          tor_free(first_address); /* TODO: Is this a good idea? */
           SMARTLIST_FOREACH(list, tor_addr_t *, a, tor_free(a));
           smartlist_free(list);
           return 0;

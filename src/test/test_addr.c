@@ -1002,7 +1002,7 @@ test_get_first_address_by_af(void *data)
 {
   smartlist_t *addrlist = smartlist_new();
   tor_addr_t *tmpaddr = tor_calloc(1, sizeof(*tmpaddr));
-  tor_addr_t *resaddr = NULL;
+  const tor_addr_t *resaddr = NULL;
 
   /* Add 3 addresses to smartlist: two IPv4, one IPv6. */
   tor_addr_from_ipv4n(tmpaddr, 13<<24 | 11<<16 | 9<<8 | 7);  /* 13.11.9.7 */
@@ -1022,15 +1022,12 @@ test_get_first_address_by_af(void *data)
   /* Should be the first addr, 13.11.9.7 */
   tt_assert(tor_addr_eq(resaddr, (tor_addr_t*) smartlist_get(addrlist, 0)));
   tt_int_op(tor_addr_family(resaddr), ==, AF_INET);
-  tor_free(resaddr);
 
   resaddr = get_first_address_by_af(addrlist, AF_INET6);
   /* Should be the IPv6 addr */
   tt_assert(tor_addr_eq(resaddr, (tor_addr_t*) smartlist_get(addrlist, 2)));
   tt_int_op(tor_addr_family(resaddr), ==, AF_INET6);
   done:
-    tor_free(resaddr);
-/*     if (addrlist) SMARTLIST_FOREACH(addrlist, tor_addr_t *, a, printf("%p\n", a)); */
     if (addrlist) SMARTLIST_FOREACH(addrlist, tor_addr_t *, a, tor_free(a));
     smartlist_free(addrlist);
 }
