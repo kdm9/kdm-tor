@@ -726,7 +726,9 @@ done:
 static void
 test_get_interface_address6(void *data)
 {
-  smartlist_t *ipv6s = NULL, *ipv4s = NULL;
+  (void) (data);
+  smartlist_t *ipv6s = NULL;
+  smartlist_t *ipv4s = NULL;
   /* get ipv4 addrs using the get_interface_address6 fn */
   ipv4s = get_interface_address6(LOG_DEBUG, AF_INET);
   if (ipv4s != NULL) {
@@ -1000,6 +1002,7 @@ test_addr_is_loopback(void *data)
 static void
 test_get_first_address_by_af(void *data)
 {
+  (void) (data);
   smartlist_t *addrlist = smartlist_new();
   tor_addr_t *tmpaddr = tor_calloc(1, sizeof(*tmpaddr));
   const tor_addr_t *resaddr = NULL;
@@ -1035,6 +1038,7 @@ test_get_first_address_by_af(void *data)
 static void
 test_get_stable_interface_address6(void *data)
 {
+  (void) data;
   int res = 0;
   tor_addr_t *addr = NULL, *old_addr = NULL;
   addr = tor_calloc(1, sizeof(*addr));
