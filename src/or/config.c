@@ -2041,7 +2041,7 @@ find_good_addr_from_list(int notice_severity, smartlist_t *list,
                          uint8_t type, int allow_internal,
                          tor_addr_t *addr_out)
 {
-  assert(addr_out);
+  tor_assert(addr_out);
 
   tor_addr_t *considered_addr = NULL;
 
