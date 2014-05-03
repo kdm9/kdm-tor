@@ -196,6 +196,20 @@ tor_addr_make_null(tor_addr_t *a, sa_family_t family)
   a->family = family;
 }
 
+/** Creates a copy of <b>src</b> to a newly malloc-ed memory address, and
+ * returns the new address. On failure of any kind, NULL is returned. */
+tor_addr_t *
+tor_addr_clone(const tor_addr_t *src)
+{
+  /* Can't copy anything from a null pointer */
+  if (src == NULL) {
+    return NULL;
+  }
+  tor_addr_t *new = tor_malloc(sizeof(*new));
+  tor_addr_copy(new, src);
+  return new;
+}
+
 /** Similar behavior to Unix gethostbyname: resolve <b>name</b>, and set
  * *<b>addr</b> to the proper IP address and family. The <b>family</b>
  * argument (which must be AF_INET, AF_INET6, or AF_UNSPEC) declares a

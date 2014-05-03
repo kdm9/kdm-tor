@@ -1092,6 +1092,25 @@ done:
   tor_free(old_addr);
 }
 
+static void
+test_addr_clone (void *data)
+{
+  tor_addr_t *src, *dest;
+  (void) data;
+  src = tor_malloc(sizeof(*src));
+  dest = NULL;
+  /* Make a tor_addr_t with valid params */
+  tor_addr_parse(src, "123.12.3.123");
+  /* clone the addr to dest */
+  dest = tor_addr_clone(src);
+  /* test equality */
+  tt_ptr_op(src, !=, dest);
+  tt_int_op(tor_addr_eq(src, dest), ==, 1);
+done:
+  tor_free(src);
+  tor_free(dest);
+}
+
 #define ADDR_LEGACY(name)                                               \
   { #name, legacy_test_helper, 0, &legacy_setup, test_addr_ ## name }
 
@@ -1107,6 +1126,7 @@ struct testcase_t addr_tests[] = {
   { "get_first_addr_by_af", test_get_first_address_by_af, 0, NULL, NULL},
   { "get_interface_address6", test_get_interface_address6, 0, NULL, NULL},
   { "get_stable_interface_address6", test_get_stable_interface_address6, 0, NULL, NULL},
+  { "addr_clone", test_addr_clone, 0, NULL, NULL},
   END_OF_TESTCASES
 };
 
