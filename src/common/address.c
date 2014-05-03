@@ -186,7 +186,7 @@ tor_addr_make_unspec(tor_addr_t *a)
   a->family = AF_UNSPEC;
 }
 
-/** Set address <a>a</b> to the null address in address family <b>family</b>.
+/** Set address <b>a</b> to the null address in address family <b>family</b>.
  * The null address for AF_INET is 0.0.0.0.  The null address for AF_INET6 is
  * [::].  AF_UNSPEC is all null. */
 void
@@ -1450,8 +1450,13 @@ get_stable_interface_address6(int severity, sa_family_t family,
   smartlist_t *list = get_interface_address6(severity, family);
   const tor_addr_t *first_address;
 
-  if (list == NULL)
+  if (list == NULL) {
     return -1; /* Avoid null dereferencing w/ list == NULL */
+  }
+  if (family != AF_INET && family != AF_INET6) {
+      /* We can't return any other kind of address */
+      return -1;
+  }
   if (smartlist_len(list) <= 0) {
     smartlist_free(list);
     return -1;
