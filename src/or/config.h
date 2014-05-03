@@ -27,6 +27,10 @@ setopt_err_t options_trial_assign(config_line_t *list, int use_defaults,
                                   int clear_first, char **msg);
 
 uint32_t get_last_resolved_addr(void);
+void
+find_good_addr_from_list(int notice_severity, smartlist_t *list,
+                         uint8_t type, int allow_internal,
+                         tor_addr_t *addr_out);
 int resolve_my_address(int warn_severity, const or_options_t *options,
                        uint8_t listener_type,
                        uint32_t *addr_out,

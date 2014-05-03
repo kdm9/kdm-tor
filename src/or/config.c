@@ -2041,9 +2041,9 @@ find_good_addr_from_list(int notice_severity, smartlist_t *list,
                          uint8_t type, int allow_internal,
                          tor_addr_t *addr_out)
 {
+  tor_addr_t *considered_addr;
+  considered_addr = NULL;
   tor_assert(addr_out);
-
-  tor_addr_t *considered_addr = NULL;
 
   SMARTLIST_FOREACH_BEGIN(list, tor_addr_t *, interface_ip_ptr) {
     if (! allow_internal && tor_addr_is_internal(interface_ip_ptr, 0)) {
@@ -2119,14 +2119,24 @@ resolve_my_address(int warn_severity, const or_options_t *options,
   char hostname[256];
   const char *method_used;
   const char *hostname_used;
-  int explicit_ip=1;
-  int explicit_hostname=1;
-  int from_interface=0;
-  const char *address = options->Address;
-  int notice_severity = warn_severity <= LOG_NOTICE ?
-                          LOG_NOTICE : warn_severity;
-  tor_addr_t *addr = tor_malloc(sizeof(tor_addr_t));
-
+  int explicit_ip;
+  int explicit_hostname;
+  int from_interface;
+  const char *address;
+  int notice_severity;
+  smartlist_t *interface_ips;
+  tor_addr_t *addr;
+  int found_matching_config;
+  tor_addr_t *a_configured_address;
+  explicit_hostname = 1;
+  explicit_ip = 1;
+  address = options->Address;
+  from_interface = 0;
+  notice_severity = warn_severity <= LOG_NOTICE ? LOG_NOTICE : warn_severity;
+  interface_ips = NULL;
+  addr = tor_malloc(sizeof(tor_addr_t));
+  found_matching_config = 0;
+  a_configured_address = NULL;
   tor_assert(addr_out);
 
   /*
@@ -2166,8 +2176,7 @@ resolve_my_address(int warn_severity, const or_options_t *options,
              "Could not resolve guessed local hostname '%s'. "
              "Trying something else.", hostname);
 
-      smartlist_t *interface_ips =
-        get_interface_address6(warn_severity, AF_INET);
+      interface_ips = get_interface_address6(warn_severity, AF_INET);
       if (! interface_ips) {
         log_fn(warn_severity, LD_CONFIG,
                "Could not get local interface IP address. Failing.");
@@ -2185,8 +2194,6 @@ resolve_my_address(int warn_severity, const or_options_t *options,
         && configured_ports) {
         /* resolved a routable address, but is it one that the user likely
          * wants? */
-        int found_matching_config = 0;
-        tor_addr_t *a_configured_address = NULL;
         SMARTLIST_FOREACH_BEGIN(configured_ports, port_cfg_t *, p) {
           if (p->type == listener_type) {
             if (tor_addr_eq(&p->addr, addr)) {
@@ -2218,8 +2225,7 @@ resolve_my_address(int warn_severity, const or_options_t *options,
                "resolves to a private IP address (%s). Trying something "
                "else.", hostname, fmt_addr(addr));
 
-        smartlist_t *interface_ips =
-          get_interface_address6(warn_severity, AF_INET);
+        get_interface_address6(warn_severity, AF_INET);
         if (! interface_ips) {
           log_fn(warn_severity, LD_CONFIG,
                  "Could not get local interface IP address. Too bad.");
