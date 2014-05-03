@@ -51,7 +51,9 @@ int tor_version_same_series(tor_version_t *a, tor_version_t *b);
 void sort_version_list(smartlist_t *lst, int remove_duplicates);
 void assert_addr_policy_ok(smartlist_t *t);
 void dump_distinct_digest_count(int severity);
-
+void find_more_or_listeners(smartlist_t *addresses, uint32_t except_v4,
+                       uint32_t v4_port, tor_addr_t *except_v6,
+                       uint32_t v6_port, smartlist_t *out);
 int compare_routerstatus_entries(const void **_a, const void **_b);
 int compare_vote_routerstatus_entries(const void **_a, const void **_b);
 networkstatus_v2_t *networkstatus_v2_parse_from_string(const char *s);

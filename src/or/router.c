@@ -1777,6 +1777,7 @@ router_pick_published_address(const or_options_t *options, uint32_t *addr)
 const port_cfg_t *
 router_get_main_ipv6_listener_address(const smartlist_t *ports)
 {
+  (void) (ports); /* Unused param */
   SMARTLIST_FOREACH_BEGIN(get_configured_ports(), port_cfg_t *, p) {
     if (p->type == CONN_TYPE_OR_LISTENER &&
         ! p->no_advertise &&
@@ -1833,6 +1834,7 @@ router_rebuild_descriptor(int force)
   char platform[256];
   int hibernating = we_are_hibernating();
   const or_options_t *options = get_options();
+  const port_cfg_t *ipv6_orport = NULL;
 
   if (desc_clean_since && !force)
     return 0;
@@ -1866,8 +1868,7 @@ router_rebuild_descriptor(int force)
 
   /* Find one IPv6 or-address that we will use as the main IPv6
    * listener address. */
-  const port_cfg_t *ipv6_orport =
-    router_get_main_ipv6_listener_address(get_configured_ports());
+  ipv6_orport = router_get_main_ipv6_listener_address(get_configured_ports());
   if (ipv6_orport) {
     tor_addr_copy(&ri->ipv6_addr, &ipv6_orport->addr);
     ri->ipv6_orport = ipv6_orport->port;
@@ -2418,16 +2419,16 @@ router_dump_router_to_string(routerinfo_t *router,
     /* convert more_or_listeners to list of or-address lines first,
      * then join them */
     char addr[TOR_ADDR_BUF_LEN];
+    const char *result = NULL;
+    char *or_address = NULL;
     smartlist_t *more_or_address_lines = smartlist_new();
 
     SMARTLIST_FOREACH_BEGIN(router->more_or_listeners,
                             const tor_addr_port_t *, ap) {
-      char *or_address =
-        tor_malloc_zero(strlen("or-address ") + TOR_ADDR_BUF_LEN +
+      or_address = tor_malloc_zero(strlen("or-address ") + TOR_ADDR_BUF_LEN +
                         strlen(":00000"));
       memset(addr, 0, TOR_ADDR_BUF_LEN);
-      const char *result =
-        tor_addr_to_str(addr, &ap->addr, sizeof(addr), 1);
+      result = tor_addr_to_str(addr, &ap->addr, sizeof(addr), 1);
       if (result) {
         tor_asprintf(&or_address, "or-address %s:%d", addr, ap->port);
 #ifdef DEBUG_ROUTER_DUMP_ROUTER_TO_STRING
