@@ -201,11 +201,12 @@ tor_addr_make_null(tor_addr_t *a, sa_family_t family)
 tor_addr_t *
 tor_addr_clone(const tor_addr_t *src)
 {
+  tor_addr_t *new;
   /* Can't copy anything from a null pointer */
   if (src == NULL) {
     return NULL;
   }
-  tor_addr_t *new = tor_malloc(sizeof(*new));
+  new = tor_malloc(sizeof(*new));
   tor_addr_copy(new, src);
   return new;
 }
