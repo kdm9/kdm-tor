@@ -2041,8 +2041,7 @@ find_good_addr_from_list(int notice_severity, smartlist_t *list,
                          uint8_t type, int allow_internal,
                          tor_addr_t *addr_out)
 {
-  tor_addr_t *considered_addr;
-  considered_addr = NULL;
+  tor_addr_t *considered_addr = NULL;
   tor_assert(addr_out);
 
   SMARTLIST_FOREACH_BEGIN(list, tor_addr_t *, interface_ip_ptr) {
@@ -2117,26 +2116,18 @@ resolve_my_address(int warn_severity, const or_options_t *options,
 {
   struct in_addr in;
   char hostname[256];
-  const char *method_used;
-  const char *hostname_used;
-  int explicit_ip;
-  int explicit_hostname;
-  int from_interface;
-  const char *address;
-  int notice_severity;
-  smartlist_t *interface_ips;
-  tor_addr_t *addr;
-  int found_matching_config;
-  tor_addr_t *a_configured_address;
-  explicit_hostname = 1;
-  explicit_ip = 1;
-  address = options->Address;
-  from_interface = 0;
-  notice_severity = warn_severity <= LOG_NOTICE ? LOG_NOTICE : warn_severity;
-  interface_ips = NULL;
-  addr = tor_malloc(sizeof(tor_addr_t));
-  found_matching_config = 0;
-  a_configured_address = NULL;
+  const char *method_used = NULL;
+  const char *hostname_used = NULL;
+  int explicit_ip = 1;
+  int explicit_hostname = 1;
+  int from_interface = 0;
+  const char *address = options->Address;
+  int notice_severity = warn_severity <= LOG_NOTICE ?
+                        LOG_NOTICE : warn_severity;
+  smartlist_t *interface_ips = NULL;
+  tor_addr_t *addr = tor_malloc(sizeof(tor_addr_t));
+  int found_matching_config = 0;
+  tor_addr_t *a_configured_address = NULL;
   tor_assert(addr_out);
 
   /*

@@ -726,11 +726,9 @@ done:
 static void
 test_get_interface_address6(void *data)
 {
-  smartlist_t *ipv6s;
-  smartlist_t *ipv4s;
+  smartlist_t *ipv6s = NULL;
+  smartlist_t *ipv4s = NULL;
   (void) data; /* Unused param */
-  ipv6s = NULL;
-  ipv4s = NULL;
   /* get ipv4 addrs using the get_interface_address6 fn */
   ipv4s = get_interface_address6(LOG_DEBUG, AF_INET);
   if (ipv4s != NULL) {
@@ -1004,13 +1002,10 @@ test_addr_is_loopback(void *data)
 static void
 test_get_first_address_by_af(void *data)
 {
-  smartlist_t *addrlist;
-  tor_addr_t *tmpaddr;
-  const tor_addr_t *resaddr; /* variable ptr to const addr! */
-  addrlist = smartlist_new();
-  tmpaddr = tor_calloc(1, sizeof(*tmpaddr));
-  resaddr = NULL;
-  (void) (data);
+  smartlist_t *addrlist = smartlist_new();
+  tor_addr_t *tmpaddr = NULL;
+  const tor_addr_t *resaddr = NULL; /* variable ptr to const addr! */
+  (void) (data); /* Unused param */
 
   /* Add 3 addresses to smartlist: two IPv4, one IPv6. */
   tor_addr_parse(tmpaddr, "13.11.9.7");
@@ -1042,12 +1037,10 @@ test_get_first_address_by_af(void *data)
 static void
 test_get_stable_interface_address6(void *data)
 {
-  int res;
-  tor_addr_t *addr, *old_addr;
+  int res = 0;
+  tor_addr_t *addr = tor_calloc(1, sizeof(*addr));
+  tor_addr_t *old_addr = tor_calloc(1, sizeof(*old_addr));
   (void) data;
-  res = 0;
-  addr = tor_calloc(1, sizeof(*addr));
-  old_addr = tor_calloc(1, sizeof(*old_addr));
 
   /* Don't have an addr, ensure 1 is returned */
   res = get_stable_interface_address6(LOG_DEBUG, AF_INET, addr);
