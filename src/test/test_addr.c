@@ -740,7 +740,7 @@ test_get_interface_address6(void *data)
                   tor_addr_family(a)));
     } SMARTLIST_FOREACH_END(a);
   }
-  /* Get 1pv6 addrs */
+  /* Get ipv6 addrs */
   ipv6s = get_interface_address6(LOG_DEBUG, AF_INET6);
   if (ipv6s != NULL) {
     SMARTLIST_FOREACH(ipv6s, tor_addr_t *, a,
@@ -1071,7 +1071,9 @@ test_get_stable_interface_address6(void *data)
   tt_assert(tor_addr_eq(addr, old_addr));
 
   /******************* Try with AF_UNSPEC & AF_UNIX ******************/
-  /* AF_UNSPEC shoudn't have any addresses */
+  /* Both of these should return -1, as get_stable_interface_address6 doesn't
+   * support these address types
+   */
   memset(addr, 0, sizeof(*addr));
   res = get_stable_interface_address6(LOG_DEBUG, AF_UNSPEC, addr);
   tt_int_op(res, ==, -1);
@@ -1079,6 +1081,7 @@ test_get_stable_interface_address6(void *data)
   memset(addr, 0, sizeof(*addr));
   res = get_stable_interface_address6(LOG_DEBUG, AF_UNIX, addr);
   tt_int_op(res, ==, -1);
+
 done:
   tor_free(addr);
   tor_free(old_addr);
