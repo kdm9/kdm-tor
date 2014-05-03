@@ -986,8 +986,7 @@ nodelist_refresh_countries(void)
 void
 node_set_last_reachability(node_t *node, tor_addr_port_t *ap, time_t value)
 {
-  tor_addr_t *addr = tor_malloc(sizeof(addr));
-  tor_addr_copy(addr, &ap->addr);
+  tor_addr_t *addr = tor_addr_clone(&ap->addr);
   int found = 0;
 
   SMARTLIST_FOREACH_BEGIN(node->last_reachable, addr_reachability_t *, ar) {
@@ -1025,8 +1024,8 @@ all_listeners_replied(routerinfo_t *ri, smartlist_t *reachability)
 {
   int have_ipv4 = ri->addr;
   int have_ipv6 = ! tor_addr_is_null(&ri->ipv6_addr);
-  tor_assert(have_ipv4 || have_ipv6);
   tor_addr_t addr;
+  tor_assert(have_ipv4 || have_ipv6);
 
   if (have_ipv4) {
     tor_addr_from_ipv4h(&addr, ri->addr);
