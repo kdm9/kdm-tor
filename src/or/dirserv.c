@@ -3643,7 +3643,7 @@ dirserv_orconn_tls_done(const tor_addr_t *addr,
       if (tor_addr_family(addr) == AF_INET)
         rep_hist_note_router_reachable(digest_rcvd, addr, or_port, now);
       else if (tor_addr_family(addr) == AF_INET6)
-        /* No rephist for IPv6.  */ ;
+      /* No rephist for IPv6.  */
       node_set_last_reachability(node, &orport, now);
     }
   }
