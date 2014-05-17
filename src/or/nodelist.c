@@ -986,14 +986,10 @@ nodelist_refresh_countries(void)
 void
 node_set_last_reachability(node_t *node, tor_addr_port_t *ap, time_t value)
 {
-  tor_addr_t *addr = tor_addr_clone(&ap->addr);
   int found = 0;
 
   SMARTLIST_FOREACH_BEGIN(node->last_reachable, addr_reachability_t *, ar) {
-    if (tor_addr_compare(&ap->addr, &(ar->addrport.addr), CMP_EXACT) == 0 &&
-        ap->port == ar->addrport.port) {
-      ar->addrport.port = ap->port;
-      ar->addrport.addr = *addr;
+    if (tor_addr_port_eq(ap, &(ar->addrport))) {
       ar->last_reachable = value;
       found = 1;
       break;
@@ -1001,15 +997,20 @@ node_set_last_reachability(node_t *node, tor_addr_port_t *ap, time_t value)
   } SMARTLIST_FOREACH_END(ar);
 
   if (! found) {
+    /* `ap` is not in the list of known addresses for this node, so add it. */
     addr_reachability_t *ar = tor_malloc(sizeof(addr_reachability_t));
-    ar->addrport = *tor_addr_port_new(addr, ap->port);
+    tor_addr_port_copy(&(ar->addrport), ap);
     ar->last_reachable = value;
     smartlist_add(node->last_reachable, ar);
   }
 }
 
+/** Check if <b>addr</b> has replied to this node, by searching a smartlist of
+ * <b>addr_reachability_t</b>s.
+ */
 int
-addr_replied(tor_addr_t* addr, uint32_t port, smartlist_t *reachability)
+addr_has_replied(const tor_addr_t* addr, const uint32_t port,
+        const smartlist_t *reachability)
 {
   SMARTLIST_FOREACH_BEGIN(reachability, addr_reachability_t *, ar) {
     if (tor_addr_eq(addr, &(ar->addrport.addr)) &&
@@ -1020,7 +1021,8 @@ addr_replied(tor_addr_t* addr, uint32_t port, smartlist_t *reachability)
 }
 
 int
-all_listeners_replied(routerinfo_t *ri, smartlist_t *reachability)
+all_listeners_have_replied(const routerinfo_t *ri,
+        const smartlist_t *reachability)
 {
   int have_ipv4 = ri->addr;
   int have_ipv6 = ! tor_addr_is_null(&ri->ipv6_addr);
@@ -1029,17 +1031,17 @@ all_listeners_replied(routerinfo_t *ri, smartlist_t *reachability)
 
   if (have_ipv4) {
     tor_addr_from_ipv4h(&addr, ri->addr);
-    if (! addr_replied(&addr, ri->or_port, reachability))
+    if (! addr_has_replied(&addr, ri->or_port, reachability))
       return 0;
   }
 
   if (have_ipv6 &&
-      ! addr_replied(&ri->ipv6_addr, ri->ipv6_orport, reachability))
+      ! addr_has_replied(&ri->ipv6_addr, ri->ipv6_orport, reachability))
       return 0;
 
   if (ri->more_or_listeners)
     SMARTLIST_FOREACH_BEGIN(ri->more_or_listeners, tor_addr_port_t *, ap) {
-      if (! addr_replied(&ap->addr, ap->port, reachability))
+      if (! addr_has_replied(&ap->addr, ap->port, reachability))
         return 0;
     } SMARTLIST_FOREACH_END(ap);
 
@@ -1053,7 +1055,7 @@ int
 node_af_reachable_since(node_t *node, sa_family_t af, time_t time)
 {
   int result = 1, have_one = 0;
-  if (! all_listeners_replied(node->ri, node->last_reachable))
+  if (! all_listeners_have_replied(node->ri, node->last_reachable))
     return 0;
   SMARTLIST_FOREACH_BEGIN(node->last_reachable, addr_reachability_t *, ar) {
     result = result && tor_addr_family(&(ar->addrport.addr)) == af &&
@@ -1069,7 +1071,7 @@ time_t
 node_get_af_last_reachability(node_t *node, sa_family_t af)
 {
   time_t earliest = 0;
-  if (! all_listeners_replied(node->ri, node->last_reachable))
+  if (! all_listeners_have_replied(node->ri, node->last_reachable))
     return 0;
   SMARTLIST_FOREACH_BEGIN(node->last_reachable, addr_reachability_t *, ar) {
       if (tor_addr_family(&(ar->addrport.addr)) == af) {
