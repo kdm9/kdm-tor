@@ -981,6 +981,46 @@ running_long_enough_to_decide_unreachable(void)
  * missed a descriptor from it. */
 #define HIBERNATION_PUBLICATION_SKEW (60*60)
 
+static int
+node_reachable_since(node_t *node, const time_t time, int consider_ipv6)
+{
+    int ipv4_reachable = node_af_reachable_since(node, AF_INET, time);
+    if (consider_ipv6) {
+      /* If we're not on IPv6, don't consider reachability of potential
+       * IPv6 OR port since that'd kill all dual stack relays until a
+       * majority of the dir auths have IPv6 connectivity. */
+      int ipv6_reachable = node_af_reachable_since(node, AF_INET6, time);
+      return ipv4_reachable && ipv6_reachable;
+    }
+    return ipv4_reachable;
+}
+
+/* Check if a router is running and is reachable */
+static int
+router_is_running (routerinfo_t *router, node_t *node,
+    const or_options_t *options, const time_t now)
+{
+  int have_ipv6 = options->AuthDirHasIPv6Connectivity && \
+      !tor_addr_is_null(&router->ipv6_addr);
+  if (router_is_me(router)) {
+    /* We always know if we are down ourselves. */
+    return ! we_are_hibernating();
+  } else if (router->is_hibernating) {
+    /* If we think the router is hibernating, we check if the node has been
+     * reached since it's hibernation status was published
+     */
+    time_t hib_stat_published = router->cache_info.published_on + \
+                           HIBERNATION_PUBLICATION_SKEW;
+    return node_reachable_since(node, hib_stat_published, have_ipv6);
+  } else {
+    /* Otherwise, a router counts as up if we found all announced OR
+     * ports reachable in the last REACHABLE_TIMEOUT seconds.
+     */
+    return node_reachable_since(node, now - REACHABLE_TIMEOUT, have_ipv6);
+  }
+}
+
+
 /** Treat a router as alive if
  *    - It's me, and I'm not hibernating.
  * or - We've found it reachable recently. */
@@ -991,61 +1031,44 @@ dirserv_set_router_is_running(routerinfo_t *router, time_t now)
     whether it's reachable and the part that tells rephist that the router was
     unreachable.
    */
-  int answer;
   const or_options_t *options = get_options();
+  int answer = 0;
   node_t *node = node_get_mutable_by_id(router->cache_info.identity_digest);
   tor_assert(node);
 
-  if (router_is_me(router)) {
-    /* We always know if we are down ourselves. */
-    answer = ! we_are_hibernating();
-  } else
-    if (router->is_hibernating &&
-        node_af_reachable_since(node, AF_INET,
-          router->cache_info.published_on + HIBERNATION_PUBLICATION_SKEW) &&
-          (! options->AuthDirHasIPv6Connectivity ||
-           node_af_reachable_since(node, AF_INET6,
-             router->cache_info.published_on + HIBERNATION_PUBLICATION_SKEW)))
-  {
-    /* A hibernating router is down unless we (somehow) had contact with it
-     * since it declared itself to be hibernating. */
-    answer = 0;
-  } else if (options->AssumeReachable) {
-    /* If AssumeReachable, everybody is up unless they say they are down! */
-    answer = 1;
-  } else {
-    /* Otherwise, a router counts as up if we found all announced OR
-       ports reachable in the last REACHABLE_TIMEOUT seconds.
-
-       If we're not on IPv6, don't consider reachability of potential
-       IPv6 OR port since that'd kill all dual stack relays until a
-       majority of the dir auths have IPv6 connectivity. */
-    answer = node_af_reachable_since(node, AF_INET, now - REACHABLE_TIMEOUT) &&
-             (options->AuthDirHasIPv6Connectivity != 1 ||
-              tor_addr_is_null(&router->ipv6_addr) ||
-              node_af_reachable_since(node, AF_INET6,
-                                      now - REACHABLE_TIMEOUT));
-  }
-
+  /* If not AssumeReachable, we have to check if somebody down! */
+  answer = options->AssumeReachable || \
+           router_is_running(router, node, options, now);
+  /* Update the node with it's running status */
+  node->is_running = answer;
+  /* And update rep_hist if we are confident about reachablity */
   if (!answer && running_long_enough_to_decide_unreachable()) {
-    /* Not considered reachable. tell rephist about that.
-
-       Because we launch a reachability test for each router every
+    time_t when4 = now;
+    time_t when6 = now;
+    time_t when = now;
+    /* Because we launch a reachability test for each router every
        REACHABILITY_TEST_CYCLE_PERIOD seconds, then the router has probably
        been down since at least that time after we last successfully reached
        it.
-
-       XXX ipv6
      */
-    time_t when = now;
-    if (! node_af_reachable_since(node, AF_INET,
-            now - REACHABILITY_TEST_CYCLE_PERIOD))
-      when = node_get_af_last_reachability(node, AF_INET) +
+    int ipv4_reachable = node_af_reachable_since(node, AF_INET,
+            now - REACHABILITY_TEST_CYCLE_PERIOD);
+    int ipv6_reachable = node_af_reachable_since(node, AF_INET6,
+            now - REACHABILITY_TEST_CYCLE_PERIOD);
+    if (! ipv4_reachable) {
+      when4 = node_get_af_last_reachability(node, AF_INET) +
              REACHABILITY_TEST_CYCLE_PERIOD;
+    }
+    if (! ipv6_reachable) {
+      when6 = node_get_af_last_reachability(node, AF_INET6) +
+             REACHABILITY_TEST_CYCLE_PERIOD;
+    }
+    /* Set last reachable time to the greater of IPv4 & IPv6, as that was the
+     * last time the node was reachable by any means.
+     */
+    when = (when4 < when6) ? when6 : when4;
     rep_hist_note_router_unreachable(router->cache_info.identity_digest, when);
   }
-
-  node->is_running = answer;
 }
 
 /** Based on the routerinfo_ts in <b>routers</b>, allocate the
