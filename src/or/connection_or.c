@@ -1027,8 +1027,7 @@ connection_or_group_set_badness(or_connection_t *head, int force)
                  (int)(now - or_conn->base_.timestamp_created),
                  best->base_.s, (int)(now - best->base_.timestamp_created));
         connection_or_mark_bad_for_new_circs(or_conn);
-      } else if (!tor_addr_compare(&or_conn->real_addr,
-                                   &best->real_addr, CMP_EXACT)) {
+      } else if (tor_addr_eq(&or_conn->real_addr, &best->real_addr)) {
         log_info(LD_OR,
                  "Marking OR conn to %s:%d as unsuitable for new circuits: "
                  "(fd "TOR_SOCKET_T_FORMAT", %d secs old).  We have a better "

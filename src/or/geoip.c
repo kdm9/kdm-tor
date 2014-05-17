@@ -498,8 +498,7 @@ clientmap_entries_eq(const clientmap_entry_t *a, const clientmap_entry_t *b)
   if (strcmp_opt(a->transport_name, b->transport_name))
     return 0;
 
-  return !tor_addr_compare(&a->addr, &b->addr, CMP_EXACT) &&
-         a->action == b->action;
+  return tor_addr_eq(&a->addr, &b->addr) && a->action == b->action;
 }
 
 HT_PROTOTYPE(clientmap, clientmap_entry_t, node, clientmap_entry_hash,

@@ -1125,8 +1125,7 @@ find_more_or_listeners(smartlist_t *addresses, uint32_t except_v4,
       case AF_INET6:
         if (bits == 128 && port_min == port_max &&
           (tor_addr_is_null(except_v6) ||
-           (! (tor_addr_compare(&a, except_v6, CMP_EXACT) == 0 &&
-            port_min == v6_port))))
+           (! (tor_addr_eq(&a, except_v6) && port_min == v6_port))))
           smartlist_add(out, tor_addr_port_new(&a, port_min));
         break;
       case AF_INET:

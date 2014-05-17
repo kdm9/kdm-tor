@@ -311,7 +311,7 @@ rep_hist_note_router_reachable(const char *id, const tor_addr_t *at_addr,
   tor_assert((!at_addr && !at_port) || (at_addr && at_port));
 
   addr_changed = at_addr && !tor_addr_is_null(&hist->last_reached_addr) &&
-    tor_addr_compare(at_addr, &hist->last_reached_addr, CMP_EXACT) != 0;
+    !tor_addr_eq(at_addr, &hist->last_reached_addr);
   port_changed = at_port && hist->last_reached_port &&
                  at_port != hist->last_reached_port;
 

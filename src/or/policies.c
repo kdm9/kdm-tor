@@ -1303,8 +1303,7 @@ policy_summary_add_item(smartlist_t *summary, addr_policy_t *p)
                                      &maskbits, NULL, NULL)<0) {
          tor_assert(0);
        }
-       if (tor_addr_compare(&p->addr, &addr, CMP_EXACT) == 0 &&
-           p->maskbits == maskbits) {
+       if (tor_addr_eq(&p->addr, &addr) && p->maskbits == maskbits) {
          is_private = 1;
          break;
        }

@@ -1890,7 +1890,7 @@ router_rebuild_descriptor(int force)
         sa_family_t af = tor_addr_family(&p->addr);
         if (((af == AF_INET  && ! p->bind_ipv6_only) ||
              (af == AF_INET6 && ! p->bind_ipv4_only)) &&
-            tor_addr_compare(&p->addr, &ri->ipv6_addr, CMP_EXACT) != 0 &&
+            ! tor_addr_eq(&p->addr, &ri->ipv6_addr) &&
             ! tor_addr_eq_ipv4h(&p->addr, ri->addr)) {
           tor_addr_port_t *ap = tor_malloc(sizeof(tor_addr_port_t));
           tor_addr_copy(&ap->addr, &p->addr);
@@ -2612,7 +2612,7 @@ router_has_orport(const routerinfo_t *router, const tor_addr_port_t *orport)
   int found = 0;
   const int compare_port = orport->port != 0;
   SMARTLIST_FOREACH_BEGIN(orports, tor_addr_port_t *, ap) {
-    if (tor_addr_compare(&orport->addr, &ap->addr, CMP_EXACT) == 0 &&
+    if (tor_addr_eq(&orport->addr, &ap->addr) &&
         compare_port && orport->port == ap->port)
       found = 1;
     tor_free(ap);

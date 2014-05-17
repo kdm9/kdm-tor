@@ -3745,10 +3745,10 @@ dirserv_single_reachability_test(time_t now, routerinfo_t *router)
     }
 
     SMARTLIST_FOREACH_BEGIN(router->more_or_listeners, tor_addr_port_t *, l) {
-      if (! (tor_addr_compare(&l->addr, &router_addr, CMP_EXACT) == 0 &&
+      if (! (tor_addr_eq(&l->addr, &router_addr) &&
              l->port == router->or_port) &&
           ! (get_options()->AuthDirHasIPv6Connectivity == 1 &&
-             tor_addr_compare(&l->addr, &router->ipv6_addr, CMP_EXACT) == 0 &&
+             tor_addr_eq(&l->addr, &router->ipv6_addr) &&
              l->port == router->ipv6_orport)) {
         char addrstr[TOR_ADDR_BUF_LEN];
         log_debug(LD_OR, "Testing reachability of %s at %s:%u.",

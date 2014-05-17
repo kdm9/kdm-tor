@@ -1642,7 +1642,7 @@ get_configured_bridge_by_orports_digest(const char *digest,
       if (tor_digest_is_zero(bridge->identity)) {
         SMARTLIST_FOREACH_BEGIN(orports, tor_addr_port_t *, ap)
           {
-            if (tor_addr_compare(&bridge->addr, &ap->addr, CMP_EXACT) == 0 &&
+            if (tor_addr_eq(&bridge->addr, &ap->addr) &&
                 bridge->port == ap->port)
               return bridge;
           }
@@ -1669,8 +1669,7 @@ get_configured_bridge_by_addr_port_digest(const tor_addr_t *addr,
   SMARTLIST_FOREACH_BEGIN(bridge_list, bridge_info_t *, bridge)
     {
       if ((tor_digest_is_zero(bridge->identity) || digest == NULL) &&
-          !tor_addr_compare(&bridge->addr, addr, CMP_EXACT) &&
-          bridge->port == port)
+          tor_addr_eq(&bridge->addr, addr) && bridge->port == port)
         return bridge;
       if (digest && tor_memeq(bridge->identity, digest, DIGEST_LEN))
         return bridge;
@@ -2100,9 +2099,8 @@ rewrite_node_address_for_bridge(const bridge_info_t *bridge, node_t *node)
     routerinfo_t *ri = node->ri;
     tor_addr_from_ipv4h(&addr, ri->addr);
 
-    if ((!tor_addr_compare(&bridge->addr, &addr, CMP_EXACT) &&
-         bridge->port == ri->or_port) ||
-        (!tor_addr_compare(&bridge->addr, &ri->ipv6_addr, CMP_EXACT) &&
+    if ((tor_addr_eq(&bridge->addr, &addr) && bridge->port == ri->or_port) ||
+        (tor_addr_eq(&bridge->addr, &ri->ipv6_addr) && \
          bridge->port == ri->ipv6_orport)) {
       /* they match, so no need to do anything */
     } else {
@@ -2150,8 +2148,7 @@ rewrite_node_address_for_bridge(const bridge_info_t *bridge, node_t *node)
     routerstatus_t *rs = node->rs;
     tor_addr_from_ipv4h(&addr, rs->addr);
 
-    if (!tor_addr_compare(&bridge->addr, &addr, CMP_EXACT) &&
-        bridge->port == rs->or_port) {
+    if (tor_addr_eq(&bridge->addr, &addr) && bridge->port == rs->or_port) {
       /* they match, so no need to do anything */
     } else {
       rs->addr = tor_addr_to_ipv4h(&bridge->addr);

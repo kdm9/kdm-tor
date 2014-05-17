@@ -2058,7 +2058,7 @@ find_good_addr_from_list(int notice_severity, smartlist_t *list,
       if (configured_ports) {
         SMARTLIST_FOREACH_BEGIN(configured_ports, port_cfg_t *, port) {
           if (port->type == type &&
-            tor_addr_compare(&port->addr, interface_ip_ptr, CMP_EXACT) == 0) {
+              tor_addr_eq(&port->addr, interface_ip_ptr)) {
             log_fn(notice_severity, LD_CONFIG,
                    "Address '%s' has been configured explicitly by the user. "
                    "Seems like a good choice, picking that one.",
