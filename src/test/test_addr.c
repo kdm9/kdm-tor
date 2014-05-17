@@ -737,7 +737,7 @@ mocked_get_interface_addresses_raw(int severity)
   addr = tor_calloc(1, sizeof(*addr));
   tor_addr_parse(addr, "38.229.72.14");
   smartlist_add(pretend_addrs, addr);
-  /* Make an WAN ipv6 addr (38.229.72.14) */
+  /* Make an WAN ipv6 addr ([2620:0:6b0:b:1a1a:0:26e5:480c]) */
   addr = tor_calloc(1, sizeof(*addr));
   tor_addr_parse(addr, "2620:0:6b0:b:1a1a:0:26e5:480c");
   smartlist_add(pretend_addrs, addr);
