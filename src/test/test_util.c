@@ -151,7 +151,7 @@ test_util_write_chunks_to_file(void *arg)
   // assert the file has been written (expected size)
   str = read_file_to_str(fname, RFTS_BIN, &st);
   tt_assert(str != NULL);
-  tt_int_op(st.st_size, ==, data_str_len);
+  tt_u64_op((uint64_t)st.st_size, ==, data_str_len);
   test_mem_op(data_str, ==, str, data_str_len);
   tor_free(str);
 
@@ -182,14 +182,14 @@ test_util_write_chunks_to_file(void *arg)
   // assert the file has been written (expected size)
   str = read_file_to_str(fname, RFTS_BIN, &st);
   tt_assert(str != NULL);
-  tt_int_op(st.st_size, ==, data_str_len);
+  tt_u64_op((uint64_t)st.st_size, ==, data_str_len);
   test_mem_op(data_str, ==, str, data_str_len);
   tor_free(str);
 
   // assert the tempfile still contains the known string
   str = read_file_to_str(tempname, RFTS_BIN, &st);
   tt_assert(str != NULL);
-  tt_int_op(st.st_size, ==, temp_str_len);
+  tt_u64_op((uint64_t)st.st_size, ==, temp_str_len);
   test_mem_op(temp_str, ==, str, temp_str_len);
 
  done:
@@ -344,7 +344,7 @@ test_util_time(void)
 
   tv.tv_sec = (time_t)1326296338;
   tv.tv_usec = 3060;
-  format_iso_time(timestr, tv.tv_sec);
+  format_iso_time(timestr, (time_t)tv.tv_sec);
   test_streq("2012-01-11 15:38:58", timestr);
   /* The output of format_local_iso_time will vary by timezone, and setting
      our timezone for testing purposes would be a nontrivial flaky pain.
@@ -352,7 +352,7 @@ test_util_time(void)
   format_local_iso_time(timestr, tv.tv_sec);
   test_streq("2012-01-11 10:38:58", timestr);
   */
-  format_iso_time_nospace(timestr, tv.tv_sec);
+  format_iso_time_nospace(timestr, (time_t)tv.tv_sec);
   test_streq("2012-01-11T15:38:58", timestr);
   test_eq(strlen(timestr), ISO_TIME_LEN);
   format_iso_time_nospace_usec(timestr, &tv);
@@ -1027,6 +1027,8 @@ test_util_strmisc(void)
   test_eq(0L,   tor_parse_long("10",-2,0,100,NULL,NULL));
   test_eq(68284L, tor_parse_long("10abc",16,0,70000,NULL,NULL));
   test_eq(68284L, tor_parse_long("10ABC",16,0,70000,NULL,NULL));
+  test_eq(0, tor_parse_long("10ABC",-1,0,70000,&i,NULL));
+  test_eq(i, 0);
 
   /* Test parse_ulong */
   test_eq(0UL, tor_parse_ulong("",10,0,100,NULL,NULL));
@@ -1038,6 +1040,8 @@ test_util_strmisc(void)
   test_eq(0UL, tor_parse_ulong("8",8,0,100,NULL,NULL));
   test_eq(50UL, tor_parse_ulong("50",10,50,100,NULL,NULL));
   test_eq(0UL, tor_parse_ulong("-50",10,-100,100,NULL,NULL));
+  test_eq(0UL, tor_parse_ulong("50",-1,50,100,&i,NULL));
+  test_eq(0, i);
 
   /* Test parse_uint64 */
   test_assert(U64_LITERAL(10) == tor_parse_uint64("10 x",10,0,100, &i, &cp));
@@ -1049,6 +1053,9 @@ test_util_strmisc(void)
   test_streq(cp, "");
   test_assert(U64_LITERAL(0) ==
               tor_parse_uint64("12345678901",10,500,INT32_MAX, &i, &cp));
+  test_eq(0, i);
+  test_assert(U64_LITERAL(0) ==
+              tor_parse_uint64("123",-1,0,INT32_MAX, &i, &cp));
   test_eq(0, i);
 
   {
@@ -1083,7 +1090,7 @@ test_util_strmisc(void)
     test_eq(i, 0);
     test_eq(0UL, tor_parse_ulong(TOOBIG, 10, 0, ULONG_MAX, &i, NULL));
     test_eq(i, 0);
-    test_eq(U64_LITERAL(0), tor_parse_uint64(TOOBIG, 10,
+    tt_u64_op(U64_LITERAL(0), ==, tor_parse_uint64(TOOBIG, 10,
                                              0, UINT64_MAX, &i, NULL));
     test_eq(i, 0);
   }
@@ -1182,19 +1189,19 @@ test_util_strmisc(void)
   }
 
   /* Test str-foo functions */
-  cp = tor_strdup("abcdef");
-  test_assert(tor_strisnonupper(cp));
-  cp[3] = 'D';
-  test_assert(!tor_strisnonupper(cp));
-  tor_strupper(cp);
-  test_streq(cp, "ABCDEF");
-  tor_strlower(cp);
-  test_streq(cp, "abcdef");
-  test_assert(tor_strisnonupper(cp));
-  test_assert(tor_strisprint(cp));
-  cp[3] = 3;
-  test_assert(!tor_strisprint(cp));
-  tor_free(cp);
+  cp_tmp = tor_strdup("abcdef");
+  test_assert(tor_strisnonupper(cp_tmp));
+  cp_tmp[3] = 'D';
+  test_assert(!tor_strisnonupper(cp_tmp));
+  tor_strupper(cp_tmp);
+  test_streq(cp_tmp, "ABCDEF");
+  tor_strlower(cp_tmp);
+  test_streq(cp_tmp, "abcdef");
+  test_assert(tor_strisnonupper(cp_tmp));
+  test_assert(tor_strisprint(cp_tmp));
+  cp_tmp[3] = 3;
+  test_assert(!tor_strisprint(cp_tmp));
+  tor_free(cp_tmp);
 
   /* Test memmem and memstr */
   {
@@ -1205,6 +1212,10 @@ test_util_strmisc(void)
     test_assert(!tor_memmem(haystack, 4, "cde", 3));
     haystack = "ababcad";
     test_eq_ptr(tor_memmem(haystack, 7, "abc", 3), haystack + 2);
+    test_eq_ptr(tor_memmem(haystack, 7, "ad", 2), haystack + 5);
+    test_eq_ptr(tor_memmem(haystack, 7, "cad", 3), haystack + 4);
+    test_assert(!tor_memmem(haystack, 7, "dadad", 5));
+    test_assert(!tor_memmem(haystack, 7, "abcdefghij", 10));
     /* memstr */
     test_eq_ptr(tor_memstr(haystack, 7, "abc"), haystack + 2);
     test_eq_ptr(tor_memstr(haystack, 7, "cad"), haystack + 4);
@@ -1277,21 +1288,21 @@ test_util_pow2(void)
   test_eq(tor_log2(UINT64_MAX), 63);
 
   /* Test round_to_power_of_2 */
-  test_eq(round_to_power_of_2(120), 128);
-  test_eq(round_to_power_of_2(128), 128);
-  test_eq(round_to_power_of_2(130), 128);
-  test_eq(round_to_power_of_2(U64_LITERAL(40000000000000000)),
-          U64_LITERAL(1)<<55);
-  test_eq(round_to_power_of_2(U64_LITERAL(0xffffffffffffffff)),
+  tt_u64_op(round_to_power_of_2(120), ==, 128);
+  tt_u64_op(round_to_power_of_2(128), ==, 128);
+  tt_u64_op(round_to_power_of_2(130), ==, 128);
+  tt_u64_op(round_to_power_of_2(U64_LITERAL(40000000000000000)), ==,
+            U64_LITERAL(1)<<55);
+  tt_u64_op(round_to_power_of_2(U64_LITERAL(0xffffffffffffffff)), ==,
           U64_LITERAL(1)<<63);
-  test_eq(round_to_power_of_2(0), 1);
-  test_eq(round_to_power_of_2(1), 1);
-  test_eq(round_to_power_of_2(2), 2);
-  test_eq(round_to_power_of_2(3), 2);
-  test_eq(round_to_power_of_2(4), 4);
-  test_eq(round_to_power_of_2(5), 4);
-  test_eq(round_to_power_of_2(6), 4);
-  test_eq(round_to_power_of_2(7), 8);
+  tt_u64_op(round_to_power_of_2(0), ==, 1);
+  tt_u64_op(round_to_power_of_2(1), ==, 1);
+  tt_u64_op(round_to_power_of_2(2), ==, 2);
+  tt_u64_op(round_to_power_of_2(3), ==, 2);
+  tt_u64_op(round_to_power_of_2(4), ==, 4);
+  tt_u64_op(round_to_power_of_2(5), ==, 4);
+  tt_u64_op(round_to_power_of_2(6), ==, 4);
+  tt_u64_op(round_to_power_of_2(7), ==, 8);
 
  done:
   ;
@@ -1570,14 +1581,14 @@ test_util_mmap(void)
   test_eq(mapping->size, strlen("Short file."));
   test_streq(mapping->data, "Short file.");
 #ifdef _WIN32
-  tor_munmap_file(mapping);
+  tt_int_op(0, ==, tor_munmap_file(mapping));
   mapping = NULL;
   test_assert(unlink(fname1) == 0);
 #else
   /* make sure we can unlink. */
   test_assert(unlink(fname1) == 0);
   test_streq(mapping->data, "Short file.");
-  tor_munmap_file(mapping);
+  tt_int_op(0, ==, tor_munmap_file(mapping));
   mapping = NULL;
 #endif
 
@@ -1598,7 +1609,7 @@ test_util_mmap(void)
   test_assert(mapping);
   test_eq(mapping->size, buflen);
   test_memeq(mapping->data, buf, buflen);
-  tor_munmap_file(mapping);
+  tt_int_op(0, ==, tor_munmap_file(mapping));
   mapping = NULL;
 
   /* Now try a big aligned file. */
@@ -1607,7 +1618,7 @@ test_util_mmap(void)
   test_assert(mapping);
   test_eq(mapping->size, 16384);
   test_memeq(mapping->data, buf, 16384);
-  tor_munmap_file(mapping);
+  tt_int_op(0, ==, tor_munmap_file(mapping));
   mapping = NULL;
 
  done:
@@ -1620,8 +1631,7 @@ test_util_mmap(void)
   tor_free(fname3);
   tor_free(buf);
 
-  if (mapping)
-    tor_munmap_file(mapping);
+  tor_munmap_file(mapping);
 }
 
 /** Run unit tests for escaping/unescaping data for use by controllers. */
@@ -2231,18 +2241,21 @@ test_util_asprintf(void *ptr)
   test_assert(cp);
   test_streq("simple string 100% safe", cp);
   test_eq(strlen(cp), r);
+  tor_free(cp);
 
   /* empty string */
   r = tor_asprintf(&cp, "%s", "");
   test_assert(cp);
   test_streq("", cp);
   test_eq(strlen(cp), r);
+  tor_free(cp);
 
   /* numbers (%i) */
   r = tor_asprintf(&cp, "I like numbers-%2i, %i, etc.", -1, 2);
   test_assert(cp);
   test_streq("I like numbers--1, 2, etc.", cp);
   test_eq(strlen(cp), r);
+  /* don't free cp; next test uses it. */
 
   /* numbers (%d) */
   r = tor_asprintf(&cp2, "First=%d, Second=%d", 101, 202);
@@ -2315,6 +2328,8 @@ test_util_listdir(void *ptr)
  done:
   tor_free(fname1);
   tor_free(fname2);
+  tor_free(fname3);
+  tor_free(dir1);
   tor_free(dirname);
   if (dir_contents) {
     SMARTLIST_FOREACH(dir_contents, char *, cp, tor_free(cp));
@@ -3131,6 +3146,8 @@ smartlist_new_from_text_lines(const char *lines)
   last_line = smartlist_pop_last(sl);
   if (last_line != NULL && *last_line != '\0') {
     smartlist_add(sl, last_line);
+  } else {
+    tor_free(last_line);
   }
 
   return sl;
@@ -3600,6 +3617,34 @@ test_util_socketpair(void *arg)
     tor_close_socket(fds[1]);
 }
 
+static void
+test_util_max_mem(void *arg)
+{
+  size_t memory1, memory2;
+  int r, r2;
+  (void) arg;
+
+  r = get_total_system_memory(&memory1);
+  r2 = get_total_system_memory(&memory2);
+  tt_int_op(r, ==, r2);
+  tt_uint_op(memory2, ==, memory1);
+
+  TT_BLATHER(("System memory: "U64_FORMAT, U64_PRINTF_ARG(memory1)));
+
+  if (r==0) {
+    /* You have at least a megabyte. */
+    tt_uint_op(memory1, >, (1<<20));
+  } else {
+    /* You do not have a petabyte. */
+#if SIZEOF_SIZE_T == SIZEOF_UINT64_T
+    tt_uint_op(memory1, <, (U64_LITERAL(1)<<50));
+#endif
+  }
+
+ done:
+  ;
+}
+
 struct testcase_t util_tests[] = {
   UTIL_LEGACY(time),
   UTIL_TEST(parse_http_time, 0),
@@ -3663,6 +3708,7 @@ struct testcase_t util_tests[] = {
     (void*)"0" },
   { "socketpair_ersatz", test_util_socketpair, TT_FORK,
     &socketpair_setup, (void*)"1" },
+  UTIL_TEST(max_mem, 0),
   END_OF_TESTCASES
 };
 

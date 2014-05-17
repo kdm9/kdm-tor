@@ -32,12 +32,19 @@ src_test_test_SOURCES = \
 	src/test/test_introduce.c \
 	src/test/test_logging.c \
 	src/test/test_microdesc.c \
+	src/test/test_oom.c \
 	src/test/test_options.c \
 	src/test/test_pt.c \
+	src/test/test_relaycell.c \
 	src/test/test_replay.c \
+	src/test/test_routerkeys.c \
 	src/test/test_socks.c \
 	src/test/test_util.c \
 	src/test/test_config.c \
+	src/test/test_hs.c \
+	src/test/test_nodelist.c \
+	src/test/test_policy.c \
+	src/test/test_status.c \
 	src/ext/tinytest.c
 
 src_test_test_CFLAGS = $(AM_CFLAGS) $(TEST_CFLAGS)
@@ -106,3 +113,9 @@ endif
 	./src/test/test-bt-cl assert | $(PYTHON) $(top_srcdir)/src/test/bt_test.py
 	./src/test/test-bt-cl crash | $(PYTHON) $(top_srcdir)/src/test/bt_test.py
 endif
+
+EXTRA_DIST += \
+	src/test/bt_test.py \
+	src/test/ntor_ref.py \
+	src/test/slownacl_curve25519.py \
+	src/test/test_cmdline_args.py

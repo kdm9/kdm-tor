@@ -93,12 +93,25 @@ void monitor_owning_controller_process(const char *process_spec);
 
 void control_event_bootstrap(bootstrap_status_t status, int progress);
 MOCK_DECL(void, control_event_bootstrap_problem,(const char *warn,
-                                                 int reason));
+                                                 int reason,
+                                                 or_connection_t *or_conn));
 
 void control_event_clients_seen(const char *controller_str);
 void control_event_transport_launched(const char *mode,
                                       const char *transport_name,
                                       tor_addr_t *addr, uint16_t port);
+const char *rend_auth_type_to_string(rend_auth_type_t auth_type);
+MOCK_DECL(const char *, node_describe_longname_by_id,(const char *id_digest));
+void control_event_hs_descriptor_requested(const rend_data_t *rend_query,
+                                           const char *desc_id_base32,
+                                           const char *hs_dir);
+void control_event_hs_descriptor_receive_end(const char *action,
+                                        const rend_data_t *rend_query,
+                                        const char *hs_dir);
+void control_event_hs_descriptor_received(const rend_data_t *rend_query,
+                                          const char *hs_dir);
+void control_event_hs_descriptor_failed(const rend_data_t *rend_query,
+                                        const char *hs_dir);
 
 void control_free_all(void);
 
@@ -140,7 +153,8 @@ void control_free_all(void);
 #define EVENT_TB_EMPTY                0x001C
 #define EVENT_CIRC_BANDWIDTH_USED     0x001D
 #define EVENT_TRANSPORT_LAUNCHED      0x0020
-#define EVENT_MAX_                    0x0020
+#define EVENT_HS_DESC                 0x0021
+#define EVENT_MAX_                    0x0021
 /* If EVENT_MAX_ ever hits 0x0040, we need to make the mask into a
  * different structure. */
 

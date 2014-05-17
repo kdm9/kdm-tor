@@ -132,6 +132,9 @@ crypto_get_rsa_padding(int padding)
 }
 
 /** Boolean: has OpenSSL's crypto been initialized? */
+static int crypto_early_initialized_ = 0;
+
+/** Boolean: has OpenSSL's crypto been initialized? */
 static int crypto_global_initialized_ = 0;
 
 /** Log all pending crypto errors at level <b>severity</b>.  Use
@@ -242,15 +245,49 @@ crypto_openssl_get_header_version_str(void)
   return crypto_openssl_header_version_str;
 }
 
+/** Make sure that openssl is using its default PRNG. Return 1 if we had to
+ * adjust it; 0 otherwise. */
+static int
+crypto_force_rand_ssleay(void)
+{
+  if (RAND_get_rand_method() != RAND_SSLeay()) {
+    log_notice(LD_CRYPTO, "It appears that one of our engines has provided "
+               "a replacement the OpenSSL RNG. Resetting it to the default "
+               "implementation.");
+    RAND_set_rand_method(RAND_SSLeay());
+    return 1;
+  }
+  return 0;
+}
+
+/** Set up the siphash key if we haven't already done so. */
+int
+crypto_init_siphash_key(void)
+{
+  static int have_seeded_siphash = 0;
+  struct sipkey key;
+  if (have_seeded_siphash)
+    return 0;
+
+  if (crypto_rand((char*) &key, sizeof(key)) < 0)
+    return -1;
+  siphash_set_global_key(&key);
+  have_seeded_siphash = 1;
+  return 0;
+}
+
 /** Initialize the crypto library.  Return 0 on success, -1 on failure.
  */
 int
-crypto_global_init(int useAccel, const char *accelName, const char *accelDir)
+crypto_early_init(void)
 {
-  if (!crypto_global_initialized_) {
+  if (!crypto_early_initialized_) {
+
+    crypto_early_initialized_ = 1;
+
     ERR_load_crypto_strings();
     OpenSSL_add_all_algorithms();
-    crypto_global_initialized_ = 1;
+
     setup_openssl_threading();
 
     if (SSLeay() == OPENSSL_VERSION_NUMBER &&
@@ -271,6 +308,26 @@ crypto_global_init(int useAccel, const char *accelName, const char *accelDir)
                  "or later.",
                  crypto_openssl_get_version_str());
     }
+
+    crypto_force_rand_ssleay();
+
+    if (crypto_seed_rng(1) < 0)
+      return -1;
+    if (crypto_init_siphash_key() < 0)
+      return -1;
+  }
+  return 0;
+}
+
+/** Initialize the crypto library.  Return 0 on success, -1 on failure.
+ */
+int
+crypto_global_init(int useAccel, const char *accelName, const char *accelDir)
+{
+  if (!crypto_global_initialized_) {
+    crypto_early_init();
+
+    crypto_global_initialized_ = 1;
 
     if (useAccel > 0) {
 #ifdef DISABLE_ENGINES
@@ -335,17 +392,13 @@ crypto_global_init(int useAccel, const char *accelName, const char *accelDir)
       log_info(LD_CRYPTO, "NOT using OpenSSL engine support.");
     }
 
-    if (RAND_get_rand_method() != RAND_SSLeay()) {
-      log_notice(LD_CRYPTO, "It appears that one of our engines has provided "
-                 "a replacement the OpenSSL RNG. Resetting it to the default "
-                 "implementation.");
-      RAND_set_rand_method(RAND_SSLeay());
+    if (crypto_force_rand_ssleay()) {
+      if (crypto_seed_rng(1) < 0)
+        return -1;
     }
 
     evaluate_evp_for_aes(-1);
     evaluate_ctr_for_aes();
-
-    return crypto_seed_rng(1);
   }
   return 0;
 }
@@ -524,7 +577,7 @@ crypto_pk_generate_key_with_bits(crypto_pk_t *env, int bits)
     r = NULL;
   done:
     if (e)
-      BN_free(e);
+      BN_clear_free(e);
     if (r)
       RSA_free(r);
   }
@@ -1324,6 +1377,28 @@ crypto_pk_get_fingerprint(crypto_pk_t *pk, char *fp_out, int add_space)
   return 0;
 }
 
+/** Given a private or public key <b>pk</b>, put a hashed fingerprint of
+ * the public key into <b>fp_out</b> (must have at least FINGERPRINT_LEN+1
+ * bytes of space).  Return 0 on success, -1 on failure.
+ *
+ * Hashed fingerprints are computed as the SHA1 digest of the SHA1 digest
+ * of the ASN.1 encoding of the public key, converted to hexadecimal, in
+ * upper case.
+ */
+int
+crypto_pk_get_hashed_fingerprint(crypto_pk_t *pk, char *fp_out)
+{
+  char digest[DIGEST_LEN], hashed_digest[DIGEST_LEN];
+  if (crypto_pk_get_digest(pk, digest)) {
+    return -1;
+  }
+  if (crypto_digest(hashed_digest, digest, DIGEST_LEN)) {
+    return -1;
+  }
+  base16_encode(fp_out, FINGERPRINT_LEN + 1, hashed_digest, DIGEST_LEN);
+  return 0;
+}
+
 /* symmetric crypto */
 
 /** Return a pointer to the key set for the cipher in <b>env</b>.
@@ -1519,7 +1594,7 @@ struct crypto_digest_t {
     SHA256_CTX sha2; /**< state for SHA256 */
   } d; /**< State for the digest we're using.  Only one member of the
         * union is usable, depending on the value of <b>algorithm</b>. */
-  ENUM_BF(digest_algorithm_t) algorithm : 8; /**< Which algorithm is in use? */
+  digest_algorithm_bitfield_t algorithm : 8; /**< Which algorithm is in use? */
 };
 
 /** Allocate and return a new digest object to compute SHA1 digests.
@@ -1924,7 +1999,7 @@ crypto_set_tls_dh_prime(const char *dynamic_dh_modulus_fname)
 
   /* If the space is occupied, free the previous TLS DH prime */
   if (dh_param_p_tls) {
-    BN_free(dh_param_p_tls);
+    BN_clear_free(dh_param_p_tls);
     dh_param_p_tls = NULL;
   }
 
@@ -2086,8 +2161,8 @@ crypto_dh_generate_public(crypto_dh_t *dh)
     log_warn(LD_CRYPTO, "Weird! Our own DH key was invalid.  I guess once-in-"
              "the-universe chances really do happen.  Trying again.");
     /* Free and clear the keys, so OpenSSL will actually try again. */
-    BN_free(dh->dh->pub_key);
-    BN_free(dh->dh->priv_key);
+    BN_clear_free(dh->dh->pub_key);
+    BN_clear_free(dh->dh->priv_key);
     dh->dh->pub_key = dh->dh->priv_key = NULL;
     goto again;
   }
@@ -2149,10 +2224,10 @@ tor_check_dh_key(int severity, BIGNUM *bn)
     log_fn(severity, LD_CRYPTO, "DH key must be at most p-2.");
     goto err;
   }
-  BN_free(x);
+  BN_clear_free(x);
   return 0;
  err:
-  BN_free(x);
+  BN_clear_free(x);
   s = BN_bn2hex(bn);
   log_fn(severity, LD_CRYPTO, "Rejecting insecure DH key [%s]", s);
   OPENSSL_free(s);
@@ -2211,7 +2286,7 @@ crypto_dh_compute_secret(int severity, crypto_dh_t *dh,
  done:
   crypto_log_errors(LOG_WARN, "completing DH handshake");
   if (pubkey_bn)
-    BN_free(pubkey_bn);
+    BN_clear_free(pubkey_bn);
   if (secret_tmp) {
     memwipe(secret_tmp, 0, secret_tmp_len);
     tor_free(secret_tmp);
@@ -2396,6 +2471,7 @@ crypto_strongest_rand(uint8_t *out, size_t out_len)
   return 0;
 #else
   for (i = 0; filenames[i]; ++i) {
+    log_debug(LD_FS, "Opening %s for entropy", filenames[i]);
     fd = open(sandbox_intern_string(filenames[i]), O_RDONLY, 0);
     if (fd<0) continue;
     log_info(LD_CRYPTO, "Reading entropy from \"%s\"", filenames[i]);
@@ -3028,7 +3104,7 @@ openssl_locking_cb_(int mode, int n, const char *file, int line)
   (void)file;
   (void)line;
   if (!openssl_mutexes_)
-    /* This is not a really good  fix for the
+    /* This is not a really good fix for the
      * "release-freed-lock-from-separate-thread-on-shutdown" problem, but
      * it can't hurt. */
     return;
@@ -3120,11 +3196,11 @@ crypto_global_cleanup(void)
   ERR_free_strings();
 
   if (dh_param_p)
-    BN_free(dh_param_p);
+    BN_clear_free(dh_param_p);
   if (dh_param_p_tls)
-    BN_free(dh_param_p_tls);
+    BN_clear_free(dh_param_p_tls);
   if (dh_param_g)
-    BN_free(dh_param_g);
+    BN_clear_free(dh_param_g);
 
 #ifndef DISABLE_ENGINES
   ENGINE_cleanup();

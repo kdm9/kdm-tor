@@ -735,13 +735,15 @@ connection_ap_process_end_not_open(
 
   if (rh->length > 0) {
     if (reason == END_STREAM_REASON_TORPROTOCOL ||
-        reason == END_STREAM_REASON_INTERNAL ||
         reason == END_STREAM_REASON_DESTROY) {
-      /* All three of these reasons could mean a failed tag
+      /* Both of these reasons could mean a failed tag
        * hit the exit and it complained. Do not probe.
        * Fail the circuit. */
       circ->path_state = PATH_STATE_USE_FAILED;
       return -END_CIRC_REASON_TORPROTOCOL;
+    } else if (reason == END_STREAM_REASON_INTERNAL) {
+      /* We can't infer success or failure, since older Tors report
+       * ENETUNREACH as END_STREAM_REASON_INTERNAL. */
     } else {
       /* Path bias: If we get a valid reason code from the exit,
        * it wasn't due to tagging.
@@ -1007,6 +1009,254 @@ connected_cell_parse(const relay_header_t *rh, const cell_t *cell,
   return 0;
 }
 
+/** Drop all storage held by <b>addr</b>. */
+STATIC void
+address_ttl_free(address_ttl_t *addr)
+{
+  if (!addr)
+    return;
+  tor_free(addr->hostname);
+  tor_free(addr);
+}
+
+/** Parse a resolved cell in <b>cell</b>, with parsed header in <b>rh</b>.
+ * Return -1 on parse error.  On success, add one or more newly allocated
+ * address_ttl_t to <b>addresses_out</b>; set *<b>errcode_out</b> to
+ * one of 0, RESOLVED_TYPE_ERROR, or RESOLVED_TYPE_ERROR_TRANSIENT, and
+ * return 0. */
+STATIC int
+resolved_cell_parse(const cell_t *cell, const relay_header_t *rh,
+                    smartlist_t *addresses_out, int *errcode_out)
+{
+  const uint8_t *cp;
+  uint8_t answer_type;
+  size_t answer_len;
+  address_ttl_t *addr;
+  size_t remaining;
+  int errcode = 0;
+  smartlist_t *addrs;
+
+  tor_assert(cell);
+  tor_assert(rh);
+  tor_assert(addresses_out);
+  tor_assert(errcode_out);
+
+  *errcode_out = 0;
+
+  if (rh->length > RELAY_PAYLOAD_SIZE)
+    return -1;
+
+  addrs = smartlist_new();
+
+  cp = cell->payload + RELAY_HEADER_SIZE;
+
+  remaining = rh->length;
+  while (remaining) {
+    const uint8_t *cp_orig = cp;
+    if (remaining < 2)
+      goto err;
+    answer_type = *cp++;
+    answer_len = *cp++;
+    if (remaining < 2 + answer_len + 4) {
+      goto err;
+    }
+    if (answer_type == RESOLVED_TYPE_IPV4) {
+      if (answer_len != 4) {
+        goto err;
+      }
+      addr = tor_malloc_zero(sizeof(*addr));
+      tor_addr_from_ipv4n(&addr->addr, get_uint32(cp));
+      cp += 4;
+      addr->ttl = ntohl(get_uint32(cp));
+      cp += 4;
+      smartlist_add(addrs, addr);
+    } else if (answer_type == RESOLVED_TYPE_IPV6) {
+      if (answer_len != 16)
+        goto err;
+      addr = tor_malloc_zero(sizeof(*addr));
+      tor_addr_from_ipv6_bytes(&addr->addr, (const char*) cp);
+      cp += 16;
+      addr->ttl = ntohl(get_uint32(cp));
+      cp += 4;
+      smartlist_add(addrs, addr);
+    } else if (answer_type == RESOLVED_TYPE_HOSTNAME) {
+      if (answer_len == 0) {
+        goto err;
+      }
+      addr = tor_malloc_zero(sizeof(*addr));
+      addr->hostname = tor_memdup_nulterm(cp, answer_len);
+      cp += answer_len;
+      addr->ttl = ntohl(get_uint32(cp));
+      cp += 4;
+      smartlist_add(addrs, addr);
+    } else if (answer_type == RESOLVED_TYPE_ERROR_TRANSIENT ||
+               answer_type == RESOLVED_TYPE_ERROR) {
+      errcode = answer_type;
+      /* Ignore the error contents */
+      cp += answer_len + 4;
+    } else {
+      cp += answer_len + 4;
+    }
+    tor_assert(((ssize_t)remaining) >= (cp - cp_orig));
+    remaining -= (cp - cp_orig);
+  }
+
+  if (errcode && smartlist_len(addrs) == 0) {
+    /* Report an error only if there were no results. */
+    *errcode_out = errcode;
+  }
+
+  smartlist_add_all(addresses_out, addrs);
+  smartlist_free(addrs);
+
+  return 0;
+
+ err:
+  /* On parse error, don't report any results */
+  SMARTLIST_FOREACH(addrs, address_ttl_t *, a, address_ttl_free(a));
+  smartlist_free(addrs);
+  return -1;
+}
+
+/** Helper for connection_edge_process_resolved_cell: given an error code,
+ * an entry_connection, and a list of address_ttl_t *, report the best answer
+ * to the entry_connection. */
+static void
+connection_ap_handshake_socks_got_resolved_cell(entry_connection_t *conn,
+                                                int error_code,
+                                                smartlist_t *results)
+{
+  address_ttl_t *addr_ipv4 = NULL;
+  address_ttl_t *addr_ipv6 = NULL;
+  address_ttl_t *addr_hostname = NULL;
+  address_ttl_t *addr_best = NULL;
+
+  /* If it's an error code, that's easy. */
+  if (error_code) {
+    tor_assert(error_code == RESOLVED_TYPE_ERROR ||
+               error_code == RESOLVED_TYPE_ERROR_TRANSIENT);
+    connection_ap_handshake_socks_resolved(conn,
+                                           error_code,0,NULL,-1,-1);
+    return;
+  }
+
+  /* Get the first answer of each type. */
+  SMARTLIST_FOREACH_BEGIN(results, address_ttl_t *, addr) {
+    if (addr->hostname) {
+      if (!addr_hostname) {
+        addr_hostname = addr;
+      }
+    } else if (tor_addr_family(&addr->addr) == AF_INET) {
+      if (!addr_ipv4 && conn->ipv4_traffic_ok) {
+        addr_ipv4 = addr;
+      }
+    } else if (tor_addr_family(&addr->addr) == AF_INET6) {
+      if (!addr_ipv6 && conn->ipv6_traffic_ok) {
+        addr_ipv6 = addr;
+      }
+    }
+  } SMARTLIST_FOREACH_END(addr);
+
+  /* Now figure out which type we wanted to deliver. */
+  if (conn->socks_request->command == SOCKS_COMMAND_RESOLVE_PTR) {
+    if (addr_hostname) {
+      connection_ap_handshake_socks_resolved(conn,
+                                             RESOLVED_TYPE_HOSTNAME,
+                                             strlen(addr_hostname->hostname),
+                                             (uint8_t*)addr_hostname->hostname,
+                                             addr_hostname->ttl,-1);
+    } else {
+      connection_ap_handshake_socks_resolved(conn,
+                                             RESOLVED_TYPE_ERROR,0,NULL,-1,-1);
+    }
+    return;
+  }
+
+  if (conn->prefer_ipv6_traffic) {
+    addr_best = addr_ipv6 ? addr_ipv6 : addr_ipv4;
+  } else {
+    addr_best = addr_ipv4 ? addr_ipv4 : addr_ipv6;
+  }
+
+  /* Now convert it to the ugly old interface */
+  if (! addr_best) {
+    connection_ap_handshake_socks_resolved(conn,
+                                     RESOLVED_TYPE_ERROR,0,NULL,-1,-1);
+    return;
+  }
+
+  connection_ap_handshake_socks_resolved_addr(conn,
+                                              &addr_best->addr,
+                                              addr_best->ttl,
+                                              -1);
+
+  remap_event_helper(conn, &addr_best->addr);
+}
+
+/** Handle a RELAY_COMMAND_RESOLVED cell that we received on a non-open AP
+ * stream. */
+STATIC int
+connection_edge_process_resolved_cell(edge_connection_t *conn,
+                                      const cell_t *cell,
+                                      const relay_header_t *rh)
+{
+  entry_connection_t *entry_conn = EDGE_TO_ENTRY_CONN(conn);
+  smartlist_t *resolved_addresses = NULL;
+  int errcode = 0;
+
+  if (conn->base_.state != AP_CONN_STATE_RESOLVE_WAIT) {
+    log_fn(LOG_PROTOCOL_WARN, LD_APP, "Got a 'resolved' cell while "
+           "not in state resolve_wait. Dropping.");
+    return 0;
+  }
+  tor_assert(SOCKS_COMMAND_IS_RESOLVE(entry_conn->socks_request->command));
+
+  resolved_addresses = smartlist_new();
+  if (resolved_cell_parse(cell, rh, resolved_addresses, &errcode)) {
+    log_fn(LOG_PROTOCOL_WARN, LD_PROTOCOL,
+           "Dropping malformed 'resolved' cell");
+    connection_mark_unattached_ap(entry_conn, END_STREAM_REASON_TORPROTOCOL);
+    goto done;
+  }
+
+  if (get_options()->ClientDNSRejectInternalAddresses) {
+    int orig_len = smartlist_len(resolved_addresses);
+    SMARTLIST_FOREACH_BEGIN(resolved_addresses, address_ttl_t *, addr) {
+      if (addr->hostname == NULL && tor_addr_is_internal(&addr->addr, 0)) {
+        log_info(LD_APP, "Got a resolved cell with answer %s; dropping that "
+                 "answer.",
+                 safe_str_client(fmt_addr(&addr->addr)));
+        address_ttl_free(addr);
+        SMARTLIST_DEL_CURRENT(resolved_addresses, addr);
+      }
+    } SMARTLIST_FOREACH_END(addr);
+    if (orig_len && smartlist_len(resolved_addresses) == 0) {
+        log_info(LD_APP, "Got a resolved cell with only private addresses; "
+                 "dropping it.");
+      connection_ap_handshake_socks_resolved(entry_conn,
+                                             RESOLVED_TYPE_ERROR_TRANSIENT,
+                                             0, NULL, 0, TIME_MAX);
+      connection_mark_unattached_ap(entry_conn,
+                                    END_STREAM_REASON_TORPROTOCOL);
+      goto done;
+    }
+  }
+
+  connection_ap_handshake_socks_got_resolved_cell(entry_conn,
+                                                  errcode,
+                                                  resolved_addresses);
+
+  connection_mark_unattached_ap(entry_conn,
+                              END_STREAM_REASON_DONE |
+                              END_STREAM_REASON_FLAG_ALREADY_SOCKS_REPLIED);
+
+ done:
+  SMARTLIST_FOREACH(resolved_addresses, address_ttl_t *, addr,
+                    address_ttl_free(addr));
+  smartlist_free(resolved_addresses);
+  return 0;
+}
+
 /** An incoming relay cell has arrived from circuit <b>circ</b> to
  * stream <b>conn</b>.
  *
@@ -1131,67 +1381,7 @@ connection_edge_process_relay_cell_not_open(
   }
   if (conn->base_.type == CONN_TYPE_AP &&
       rh->command == RELAY_COMMAND_RESOLVED) {
-    int ttl;
-    int answer_len;
-    uint8_t answer_type;
-    entry_connection_t *entry_conn = EDGE_TO_ENTRY_CONN(conn);
-    if (conn->base_.state != AP_CONN_STATE_RESOLVE_WAIT) {
-      log_fn(LOG_PROTOCOL_WARN, LD_APP, "Got a 'resolved' cell while "
-             "not in state resolve_wait. Dropping.");
-      return 0;
-    }
-    tor_assert(SOCKS_COMMAND_IS_RESOLVE(entry_conn->socks_request->command));
-    answer_len = cell->payload[RELAY_HEADER_SIZE+1];
-    if (rh->length < 2 || answer_len+2>rh->length) {
-      log_fn(LOG_PROTOCOL_WARN, LD_PROTOCOL,
-             "Dropping malformed 'resolved' cell");
-      connection_mark_unattached_ap(entry_conn, END_STREAM_REASON_TORPROTOCOL);
-      return 0;
-    }
-    answer_type = cell->payload[RELAY_HEADER_SIZE];
-    if (rh->length >= answer_len+6)
-      ttl = (int)ntohl(get_uint32(cell->payload+RELAY_HEADER_SIZE+
-                                  2+answer_len));
-    else
-      ttl = -1;
-    if (answer_type == RESOLVED_TYPE_IPV4 ||
-        answer_type == RESOLVED_TYPE_IPV6) {
-      tor_addr_t addr;
-      if (decode_address_from_payload(&addr, cell->payload+RELAY_HEADER_SIZE,
-                                      rh->length) &&
-          tor_addr_is_internal(&addr, 0) &&
-          get_options()->ClientDNSRejectInternalAddresses) {
-        log_info(LD_APP,"Got a resolve with answer %s. Rejecting.",
-                 fmt_addr(&addr));
-        connection_ap_handshake_socks_resolved(entry_conn,
-                                               RESOLVED_TYPE_ERROR_TRANSIENT,
-                                               0, NULL, 0, TIME_MAX);
-        connection_mark_unattached_ap(entry_conn,
-                                      END_STREAM_REASON_TORPROTOCOL);
-        return 0;
-      }
-    }
-    connection_ap_handshake_socks_resolved(entry_conn,
-                   answer_type,
-                   cell->payload[RELAY_HEADER_SIZE+1], /*answer_len*/
-                   cell->payload+RELAY_HEADER_SIZE+2, /*answer*/
-                   ttl,
-                   -1);
-    if (answer_type == RESOLVED_TYPE_IPV4 && answer_len == 4) {
-      tor_addr_t addr;
-      tor_addr_from_ipv4n(&addr,
-                          get_uint32(cell->payload+RELAY_HEADER_SIZE+2));
-      remap_event_helper(entry_conn, &addr);
-    } else if (answer_type == RESOLVED_TYPE_IPV6 && answer_len == 16) {
-      tor_addr_t addr;
-      tor_addr_from_ipv6_bytes(&addr,
-                               (char*)(cell->payload+RELAY_HEADER_SIZE+2));
-      remap_event_helper(entry_conn, &addr);
-    }
-    connection_mark_unattached_ap(entry_conn,
-                              END_STREAM_REASON_DONE |
-                              END_STREAM_REASON_FLAG_ALREADY_SOCKS_REPLIED);
-    return 0;
+    return connection_edge_process_resolved_cell(conn, cell, rh);
   }
 
   log_fn(LOG_PROTOCOL_WARN, LD_PROTOCOL,
@@ -2047,14 +2237,6 @@ static size_t total_cells_allocated = 0;
 /** A memory pool to allocate packed_cell_t objects. */
 static mp_pool_t *cell_pool = NULL;
 
-/** Memory pool to allocate insertion_time_elem_t objects used for cell
- * statistics. */
-static mp_pool_t *it_pool = NULL;
-
-/** Memory pool to allocate insertion_command_elem_t objects used for cell
- * statistics if CELL_STATS events are enabled. */
-static mp_pool_t *ic_pool = NULL;
-
 /** Allocate structures to hold cells. */
 void
 init_cell_pool(void)
@@ -2072,14 +2254,6 @@ free_cell_pool(void)
   if (cell_pool) {
     mp_pool_destroy(cell_pool);
     cell_pool = NULL;
-  }
-  if (it_pool) {
-    mp_pool_destroy(it_pool);
-    it_pool = NULL;
-  }
-  if (ic_pool) {
-    mp_pool_destroy(ic_pool);
-    ic_pool = NULL;
   }
 }
 
@@ -2153,57 +2327,6 @@ cell_queue_append(cell_queue_t *queue, packed_cell_t *cell)
   ++queue->n;
 }
 
-/** Append command of type <b>command</b> in direction to <b>queue</b> for
- * CELL_STATS event. */
-static void
-cell_command_queue_append(cell_queue_t *queue, uint8_t command)
-{
-  insertion_command_queue_t *ic_queue = queue->insertion_commands;
-  if (!ic_pool)
-    ic_pool = mp_pool_new(sizeof(insertion_command_elem_t), 1024);
-  if (!ic_queue) {
-    ic_queue = tor_malloc_zero(sizeof(insertion_command_queue_t));
-    queue->insertion_commands = ic_queue;
-  }
-  if (ic_queue->last && ic_queue->last->command == command) {
-    ic_queue->last->counter++;
-  } else {
-    insertion_command_elem_t *elem = mp_pool_get(ic_pool);
-    elem->next = NULL;
-    elem->command = command;
-    elem->counter = 1;
-    if (ic_queue->last) {
-      ic_queue->last->next = elem;
-      ic_queue->last = elem;
-    } else {
-      ic_queue->first = ic_queue->last = elem;
-    }
-  }
-}
-
-/** Retrieve oldest command from <b>queue</b> and write it to
- * <b>command</b> for CELL_STATS event.  Return 0 for success, -1
- * otherwise. */
-static int
-cell_command_queue_pop(uint8_t *command, cell_queue_t *queue)
-{
-  int res = -1;
-  insertion_command_queue_t *ic_queue = queue->insertion_commands;
-  if (ic_queue && ic_queue->first) {
-    insertion_command_elem_t *ic_elem = ic_queue->first;
-    ic_elem->counter--;
-    if (ic_elem->counter < 1) {
-      ic_queue->first = ic_elem->next;
-      if (ic_elem == ic_queue->last)
-        ic_queue->last = NULL;
-      mp_pool_release(ic_elem);
-    }
-    *command = ic_elem->command;
-    res = 0;
-  }
-  return res;
-}
-
 /** Append a newly allocated copy of <b>cell</b> to the end of the
  * <b>exitward</b> (or app-ward) <b>queue</b> of <b>circ</b>.  If
  * <b>use_stats</b> is true, record statistics about the cell.
@@ -2215,52 +2338,13 @@ cell_queue_append_packed_copy(circuit_t *circ, cell_queue_t *queue,
 {
   struct timeval now;
   packed_cell_t *copy = packed_cell_copy(cell, wide_circ_ids);
-  tor_gettimeofday_cached(&now);
+  (void)circ;
+  (void)exitward;
+  (void)use_stats;
+  tor_gettimeofday_cached_monotonic(&now);
+
   copy->inserted_time = (uint32_t)tv_to_msec(&now);
 
-  /* Remember the time when this cell was put in the queue. */
-  /*XXXX This may be obsoleted by inserted_time */
-  if ((get_options()->CellStatistics ||
-      get_options()->TestingEnableCellStatsEvent) && use_stats) {
-    uint32_t added;
-    insertion_time_queue_t *it_queue = queue->insertion_times;
-    if (!it_pool)
-      it_pool = mp_pool_new(sizeof(insertion_time_elem_t), 1024);
-
-#define SECONDS_IN_A_DAY 86400L
-    added = (uint32_t)(((now.tv_sec % SECONDS_IN_A_DAY) * 100L)
-            + ((uint32_t)now.tv_usec / (uint32_t)10000L));
-    if (!it_queue) {
-      it_queue = tor_malloc_zero(sizeof(insertion_time_queue_t));
-      queue->insertion_times = it_queue;
-    }
-    if (it_queue->last && it_queue->last->insertion_time == added) {
-      it_queue->last->counter++;
-    } else {
-      insertion_time_elem_t *elem = mp_pool_get(it_pool);
-      elem->next = NULL;
-      elem->insertion_time = added;
-      elem->counter = 1;
-      if (it_queue->last) {
-        it_queue->last->next = elem;
-        it_queue->last = elem;
-      } else {
-        it_queue->first = it_queue->last = elem;
-      }
-    }
-  }
-  /* Remember that we added a cell to the queue, and remember the cell
-   * command. */
-  if (get_options()->TestingEnableCellStatsEvent && circ) {
-    testing_cell_stats_entry_t *ent =
-                      tor_malloc_zero(sizeof(testing_cell_stats_entry_t));
-    ent->command = cell->command;
-    ent->exitward = exitward;
-    if (!circ->testing_cell_stats)
-      circ->testing_cell_stats = smartlist_new();
-    smartlist_add(circ->testing_cell_stats, ent);
-    cell_command_queue_append(queue, cell->command);
-  }
   cell_queue_append(queue, copy);
 }
 
@@ -2283,14 +2367,6 @@ cell_queue_clear(cell_queue_t *queue)
   }
   TOR_SIMPLEQ_INIT(&queue->head);
   queue->n = 0;
-  if (queue->insertion_times) {
-    while (queue->insertion_times->first) {
-      insertion_time_elem_t *elem = queue->insertion_times->first;
-      queue->insertion_times->first = elem->next;
-      mp_pool_release(elem);
-    }
-    tor_free(queue->insertion_times);
-  }
 }
 
 /** Extract and return the cell at the head of <b>queue</b>; return NULL if
@@ -2311,18 +2387,24 @@ cell_queue_pop(cell_queue_t *queue)
 size_t
 packed_cell_mem_cost(void)
 {
-  return sizeof(packed_cell_t) + MP_POOL_ITEM_OVERHEAD +
-    get_options()->CellStatistics ?
-    (sizeof(insertion_time_elem_t)+MP_POOL_ITEM_OVERHEAD) : 0;
+  return sizeof(packed_cell_t) + MP_POOL_ITEM_OVERHEAD;
+}
+
+/** DOCDOC */
+STATIC size_t
+cell_queues_get_total_allocation(void)
+{
+  return total_cells_allocated * packed_cell_mem_cost();
 }
 
 /** Check whether we've got too much space used for cells.  If so,
  * call the OOM handler and return 1.  Otherwise, return 0. */
-static int
+STATIC int
 cell_queues_check_size(void)
 {
-  size_t alloc = total_cells_allocated * packed_cell_mem_cost();
-  if (alloc >= get_options()->MaxMemInCellQueues) {
+  size_t alloc = cell_queues_get_total_allocation();
+  alloc += buf_get_total_allocation();
+  if (alloc >= get_options()->MaxMemInQueues) {
     circuits_handle_oom(alloc);
     return 1;
   }
@@ -2377,14 +2459,18 @@ update_circuit_on_cmux_(circuit_t *circ, cell_direction_t direction,
   assert_cmux_ok_paranoid(chan);
 }
 
-/** Remove all circuits from the cmux on <b>chan</b>. */
+/** Remove all circuits from the cmux on <b>chan</b>.
+ *
+ * If <b>circuits_out</b> is non-NULL, add all detached circuits to
+ * <b>circuits_out</b>.
+ **/
 void
-channel_unlink_all_circuits(channel_t *chan)
+channel_unlink_all_circuits(channel_t *chan, smartlist_t *circuits_out)
 {
   tor_assert(chan);
   tor_assert(chan->cmux);
 
-  circuitmux_detach_all_circuits(chan->cmux);
+  circuitmux_detach_all_circuits(chan->cmux, circuits_out);
   chan->num_n_circuits = 0;
   chan->num_p_circuits = 0;
 }
@@ -2441,6 +2527,17 @@ set_streams_blocked_on_circ(circuit_t *circ, channel_t *chan,
   }
 
   return n;
+}
+
+/** Extract the command from a packed cell. */
+static uint8_t
+packed_cell_get_command(const packed_cell_t *cell, int wide_circ_ids)
+{
+  if (wide_circ_ids) {
+    return get_uint8(cell->body+4);
+  } else {
+    return get_uint8(cell->body+2);
+  }
 }
 
 /** Pull as many cells as possible (but no more than <b>max</b>) from the
@@ -2504,55 +2601,30 @@ channel_flush_from_first_active_circuit(channel_t *chan, int max)
     /* Calculate the exact time that this cell has spent in the queue. */
     if (get_options()->CellStatistics ||
         get_options()->TestingEnableCellStatsEvent) {
+      uint32_t msec_waiting;
       struct timeval tvnow;
-      uint32_t flushed;
-      uint32_t cell_waiting_time;
-      insertion_time_queue_t *it_queue = queue->insertion_times;
       tor_gettimeofday_cached(&tvnow);
-      flushed = (uint32_t)((tvnow.tv_sec % SECONDS_IN_A_DAY) * 100L +
-                 (uint32_t)tvnow.tv_usec / (uint32_t)10000L);
-      if (!it_queue || !it_queue->first) {
-        log_info(LD_GENERAL, "Cannot determine insertion time of cell. "
-                             "Looks like the CellStatistics option was "
-                             "recently enabled.");
-      } else {
-        insertion_time_elem_t *elem = it_queue->first;
-        cell_waiting_time =
-            (uint32_t)((flushed * 10L + SECONDS_IN_A_DAY * 1000L -
-                        elem->insertion_time * 10L) %
-                       (SECONDS_IN_A_DAY * 1000L));
-#undef SECONDS_IN_A_DAY
-        elem->counter--;
-        if (elem->counter < 1) {
-          it_queue->first = elem->next;
-          if (elem == it_queue->last)
-            it_queue->last = NULL;
-          mp_pool_release(elem);
-        }
-        if (get_options()->CellStatistics && !CIRCUIT_IS_ORIGIN(circ)) {
-          or_circ = TO_OR_CIRCUIT(circ);
-          or_circ->total_cell_waiting_time += cell_waiting_time;
-          or_circ->processed_cells++;
-        }
-        if (get_options()->TestingEnableCellStatsEvent) {
-          uint8_t command;
-          if (cell_command_queue_pop(&command, queue) < 0) {
-            log_info(LD_GENERAL, "Cannot determine command of cell. "
-                                 "Looks like the CELL_STATS event was "
-                                 "recently enabled.");
-          } else {
-            testing_cell_stats_entry_t *ent =
-                        tor_malloc_zero(sizeof(testing_cell_stats_entry_t));
-            ent->command = command;
-            ent->waiting_time = (unsigned int)cell_waiting_time / 10;
-            ent->removed = 1;
-            if (circ->n_chan == chan)
-              ent->exitward = 1;
-            if (!circ->testing_cell_stats)
-              circ->testing_cell_stats = smartlist_new();
-            smartlist_add(circ->testing_cell_stats, ent);
-          }
-        }
+      msec_waiting = ((uint32_t)tv_to_msec(&tvnow)) - cell->inserted_time;
+
+      if (get_options()->CellStatistics && !CIRCUIT_IS_ORIGIN(circ)) {
+        or_circ = TO_OR_CIRCUIT(circ);
+        or_circ->total_cell_waiting_time += msec_waiting;
+        or_circ->processed_cells++;
+      }
+
+      if (get_options()->TestingEnableCellStatsEvent) {
+        uint8_t command = packed_cell_get_command(cell, chan->wide_circ_ids);
+
+        testing_cell_stats_entry_t *ent =
+          tor_malloc_zero(sizeof(testing_cell_stats_entry_t));
+        ent->command = command;
+        ent->waiting_time = msec_waiting / 10;
+        ent->removed = 1;
+        if (circ->n_chan == chan)
+          ent->exitward = 1;
+        if (!circ->testing_cell_stats)
+          circ->testing_cell_stats = smartlist_new();
+        smartlist_add(circ->testing_cell_stats, ent);
       }
     }
 

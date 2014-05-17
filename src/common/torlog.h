@@ -13,6 +13,7 @@
 #ifndef TOR_TORLOG_H
 
 #include "compat.h"
+#include "testsupport.h"
 
 #ifdef HAVE_SYSLOG_H
 #include <syslog.h>
@@ -155,9 +156,9 @@ void tor_log_err_sigsafe(const char *m, ...);
 int tor_log_get_sigsafe_err_fds(const int **out);
 void tor_log_update_sigsafe_err_fds(void);
 
-#if defined(__GNUC__) || defined(RUNNING_DOXYGEN)
 extern int log_global_min_severity_;
 
+#if defined(__GNUC__) || defined(RUNNING_DOXYGEN)
 void log_fn_(int severity, log_domain_mask_t domain,
              const char *funcname, const char *format, ...)
   CHECK_PRINTF(4,5);
@@ -227,6 +228,12 @@ extern const char *log_fn_function_name_;
 #endif
 
 #endif /* !GNUC */
+
+#ifdef LOG_PRIVATE
+MOCK_DECL(STATIC void, logv, (int severity, log_domain_mask_t domain,
+    const char *funcname, const char *suffix, const char *format,
+    va_list ap) CHECK_PRINTF(5,0));
+#endif
 
 # define TOR_TORLOG_H
 #endif

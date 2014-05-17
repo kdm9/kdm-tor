@@ -390,10 +390,13 @@ circuitmux_alloc(void)
 
 /**
  * Detach all circuits from a circuitmux (use before circuitmux_free())
+ *
+ * If <b>detached_out</b> is non-NULL, add every detached circuit_t to
+ * detached_out.
  */
 
 void
-circuitmux_detach_all_circuits(circuitmux_t *cmux)
+circuitmux_detach_all_circuits(circuitmux_t *cmux, smartlist_t *detached_out)
 {
   chanid_circid_muxinfo_t **i = NULL, *to_remove;
   channel_t *chan = NULL;
@@ -409,7 +412,11 @@ circuitmux_detach_all_circuits(circuitmux_t *cmux)
   i = HT_START(chanid_circid_muxinfo_map, cmux->chanid_circid_map);
   while (i) {
     to_remove = *i;
-    if (to_remove) {
+
+    if (! to_remove) {
+      log_warn(LD_BUG, "Somehow, an HT iterator gave us a NULL pointer.");
+      break;
+    } else {
       /* Find a channel and circuit */
       chan = channel_find_by_global_id(to_remove->chan_id);
       if (chan) {
@@ -430,6 +437,9 @@ circuitmux_detach_all_circuits(circuitmux_t *cmux)
 
             /* Clear n_mux */
             circ->n_mux = NULL;
+
+            if (detached_out)
+              smartlist_add(detached_out, circ);
           } else if (circ->magic == OR_CIRCUIT_MAGIC) {
             /*
              * Update active_circuits et al.; this does policy notifies, so
@@ -445,6 +455,9 @@ circuitmux_detach_all_circuits(circuitmux_t *cmux)
              * so clear p_mux.
              */
             TO_OR_CIRCUIT(circ)->p_mux = NULL;
+
+            if (detached_out)
+              smartlist_add(detached_out, circ);
           } else {
             /* Complain and move on */
             log_warn(LD_CIRC,

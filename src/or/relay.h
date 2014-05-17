@@ -61,7 +61,7 @@ void cell_queue_append_packed_copy(circuit_t *circ, cell_queue_t *queue,
 void append_cell_to_circuit_queue(circuit_t *circ, channel_t *chan,
                                   cell_t *cell, cell_direction_t direction,
                                   streamid_t fromstream);
-void channel_unlink_all_circuits(channel_t *chan);
+void channel_unlink_all_circuits(channel_t *chan, smartlist_t *detached_out);
 int channel_flush_from_first_active_circuit(channel_t *chan, int max);
 void assert_circuit_mux_okay(channel_t *chan);
 void update_circuit_on_cmux_(circuit_t *circ, cell_direction_t direction,
@@ -83,8 +83,22 @@ int relay_crypt(circuit_t *circ, cell_t *cell, cell_direction_t cell_direction,
 #ifdef RELAY_PRIVATE
 STATIC int connected_cell_parse(const relay_header_t *rh, const cell_t *cell,
                          tor_addr_t *addr_out, int *ttl_out);
+/** An address-and-ttl tuple as yielded by resolved_cell_parse */
+typedef struct address_ttl_s {
+  tor_addr_t addr;
+  char *hostname;
+  int ttl;
+} address_ttl_t;
+STATIC void address_ttl_free(address_ttl_t *addr);
+STATIC int resolved_cell_parse(const cell_t *cell, const relay_header_t *rh,
+                               smartlist_t *addresses_out, int *errcode_out);
+STATIC int connection_edge_process_resolved_cell(edge_connection_t *conn,
+                                                 const cell_t *cell,
+                                                 const relay_header_t *rh);
 STATIC packed_cell_t *packed_cell_new(void);
 STATIC packed_cell_t *cell_queue_pop(cell_queue_t *queue);
+STATIC size_t cell_queues_get_total_allocation(void);
+STATIC int cell_queues_check_size(void);
 #endif
 
 #endif

@@ -147,9 +147,6 @@ static INLINE char *format_msg(char *buf, size_t buf_len,
            const char *suffix,
            const char *format, va_list ap, size_t *msg_len_out)
   CHECK_PRINTF(7,0);
-static void logv(int severity, log_domain_mask_t domain, const char *funcname,
-                 const char *suffix, const char *format, va_list ap)
-  CHECK_PRINTF(5,0);
 
 /** Name of the application: used to generate the message we write at the
  * start of each new log. */
@@ -336,9 +333,9 @@ format_msg(char *buf, size_t buf_len,
  * <b>severity</b>.  If provided, <b>funcname</b> is prepended to the
  * message.  The actual message is derived as from tor_snprintf(format,ap).
  */
-static void
-logv(int severity, log_domain_mask_t domain, const char *funcname,
-     const char *suffix, const char *format, va_list ap)
+MOCK_IMPL(STATIC void,
+logv,(int severity, log_domain_mask_t domain, const char *funcname,
+     const char *suffix, const char *format, va_list ap))
 {
   char buf[10024];
   size_t msg_len = 0;
@@ -1278,39 +1275,4 @@ switch_logs_debug(void)
   log_global_min_severity_ = get_min_log_level();
   UNLOCK_LOGS();
 }
-
-#if 0
-static void
-dump_log_info(logfile_t *lf)
-{
-  const char *tp;
-
-  if (lf->filename) {
-    printf("=== log into \"%s\" (%s-%s) (%stemporary)\n", lf->filename,
-           sev_to_string(lf->min_loglevel),
-           sev_to_string(lf->max_loglevel),
-           lf->is_temporary?"":"not ");
-  } else if (lf->is_syslog) {
-    printf("=== syslog (%s-%s) (%stemporary)\n",
-           sev_to_string(lf->min_loglevel),
-           sev_to_string(lf->max_loglevel),
-           lf->is_temporary?"":"not ");
-  } else {
-    printf("=== log (%s-%s) (%stemporary)\n",
-           sev_to_string(lf->min_loglevel),
-           sev_to_string(lf->max_loglevel),
-           lf->is_temporary?"":"not ");
-  }
-}
-
-void
-describe_logs(void)
-{
-  logfile_t *lf;
-  printf("==== BEGIN LOGS ====\n");
-  for (lf = logfiles; lf; lf = lf->next)
-    dump_log_info(lf);
-  printf("==== END LOGS ====\n");
-}
-#endif
 

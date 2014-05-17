@@ -255,7 +255,9 @@ tor_addr_lookup(const char *name, uint16_t family, tor_addr_t *addr)
     hints.ai_family = family;
     hints.ai_socktype = SOCK_STREAM;
     err = sandbox_getaddrinfo(name, NULL, &hints, &res);
-    if (!err) {
+    /* The check for 'res' here shouldn't be necessary, but it makes static
+     * analysis tools happy. */
+    if (!err && res) {
       best = NULL;
       for (res_p = res; res_p; res_p = res_p->ai_next) {
         if (family == AF_UNSPEC) {
@@ -893,6 +895,32 @@ tor_addr_copy(tor_addr_t *dest, const tor_addr_t *src)
   memcpy(dest, src, sizeof(tor_addr_t));
 }
 
+/** Copy a tor_addr_t from <b>src</b> to <b>dest</b>, taking extra case to
+ * copy only the well-defined portions. Used for computing hashes of
+ * addresses.
+ */
+void
+tor_addr_copy_tight(tor_addr_t *dest, const tor_addr_t *src)
+{
+  tor_assert(src != dest);
+  tor_assert(src);
+  tor_assert(dest);
+  memset(dest, 0, sizeof(tor_addr_t));
+  dest->family = src->family;
+  switch (tor_addr_family(src))
+    {
+    case AF_INET:
+      dest->addr.in_addr.s_addr = src->addr.in_addr.s_addr;
+      break;
+    case AF_INET6:
+      memcpy(dest->addr.in6_addr.s6_addr, src->addr.in6_addr.s6_addr, 16);
+    case AF_UNSPEC:
+      break;
+    default:
+      tor_fragile_assert();
+    }
+}
+
 /** Given two addresses <b>addr1</b> and <b>addr2</b>, return 0 if the two
  * addresses are equivalent under the mask mbits, less than 0 if addr1
  * precedes addr2, and greater than 0 otherwise.
@@ -1014,19 +1042,17 @@ tor_addr_compare_masked(const tor_addr_t *addr1, const tor_addr_t *addr2,
   }
 }
 
-/** Return a hash code based on the address addr */
-unsigned int
+/** Return a hash code based on the address addr. DOCDOC extra */
+uint64_t
 tor_addr_hash(const tor_addr_t *addr)
 {
   switch (tor_addr_family(addr)) {
   case AF_INET:
-    return tor_addr_to_ipv4h(addr);
+    return siphash24g(&addr->addr.in_addr.s_addr, 4);
   case AF_UNSPEC:
     return 0x4e4d5342;
-  case AF_INET6: {
-    const uint32_t *u = tor_addr_to_in6_addr32(addr);
-    return u[0] + u[1] + u[2] + u[3];
-    }
+  case AF_INET6:
+    return siphash24g(&addr->addr.in6_addr.s6_addr, 16);
   default:
     tor_fragile_assert();
     return 0;
@@ -1544,31 +1570,22 @@ get_stable_interface_address6(int severity, sa_family_t family,
  * XXXX024 IPv6 deprecate some of these.
  */
 
-/** Return true iff <b>ip</b> (in host order) is an IP reserved to localhost,
- * or reserved for local networks by RFC 1918.
- */
-int
-is_internal_IP(uint32_t ip, int for_listening)
-{
-  tor_addr_t myaddr;
-  myaddr.family = AF_INET;
-  myaddr.addr.in_addr.s_addr = htonl(ip);
-
-  return tor_addr_is_internal(&myaddr, for_listening);
-}
-
 /** Given an address of the form "ip:port", try to divide it into its
  * ip and port portions, setting *<b>address_out</b> to a newly
  * allocated string holding the address portion and *<b>port_out</b>
  * to the port.
  *
- * Don't do DNS lookups and don't allow domain names in the <ip> field.
- * Don't accept <b>addrport</b> of the form "<ip>" or "<ip>:0".
+ * Don't do DNS lookups and don't allow domain names in the "ip" field.
+ *
+ * If <b>default_port</b> is less than 0, don't accept <b>addrport</b> of the
+ * form "ip" or "ip:0".  Otherwise, accept those forms, and set
+ * *<b>port_out</b> to <b>default_port</b>.
  *
  * Return 0 on success, -1 on failure. */
 int
 tor_addr_port_parse(int severity, const char *addrport,
-                    tor_addr_t *address_out, uint16_t *port_out)
+                    tor_addr_t *address_out, uint16_t *port_out,
+                    int default_port)
 {
   int retval = -1;
   int r;
@@ -1582,8 +1599,12 @@ tor_addr_port_parse(int severity, const char *addrport,
   if (r < 0)
     goto done;
 
-  if (!*port_out)
-    goto done;
+  if (!*port_out) {
+    if (default_port >= 0)
+      *port_out = default_port;
+    else
+      goto done;
+  }
 
   /* make sure that address_out is an IP address */
   if (tor_addr_parse(address_out, addr_tmp) < 0)
@@ -1604,9 +1625,18 @@ int
 tor_addr_port_split(int severity, const char *addrport,
                     char **address_out, uint16_t *port_out)
 {
+  tor_addr_t a_tmp;
   tor_assert(addrport);
   tor_assert(address_out);
   tor_assert(port_out);
+  /* We need to check for IPv6 manually because addr_port_lookup() doesn't
+   * do a good job on IPv6 addresses that lack a port. */
+  if (tor_addr_parse(&a_tmp, addrport) == AF_INET6) {
+    *port_out = 0;
+    *address_out = tor_strdup(addrport);
+    return 0;
+  }
+
   return addr_port_lookup(severity, addrport, address_out, NULL, port_out);
 }
 
@@ -1684,7 +1714,7 @@ addr_mask_get_bits(uint32_t mask)
     return 0;
   if (mask == 0xFFFFFFFFu)
     return 32;
-  for (i=0; i<=32; ++i) {
+  for (i=1; i<=32; ++i) {
     if (mask == (uint32_t) ~((1u<<(32-i))-1)) {
       return i;
     }

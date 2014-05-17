@@ -9,6 +9,8 @@
  * \brief The actual details of building circuits.
  **/
 
+#define CIRCUITBUILD_PRIVATE
+
 #include "or.h"
 #include "channel.h"
 #include "circpathbias.h"
@@ -57,6 +59,9 @@ static crypt_path_t *onion_next_hop_in_cpath(crypt_path_t *cpath);
 static int onion_extend_cpath(origin_circuit_t *circ);
 static int count_acceptable_nodes(smartlist_t *routers);
 static int onion_append_hop(crypt_path_t **head_ptr, extend_info_t *choice);
+#ifdef CURVE25519_ENABLED
+static int circuits_can_use_ntor(void);
+#endif
 
 /** This function tries to get a channel to the specified endpoint,
  * and then calls command_setup_channel() to give it the right
@@ -74,18 +79,27 @@ channel_connect_for_circuit(const tor_addr_t *addr, uint16_t port,
   return chan;
 }
 
-/** Iterate over values of circ_id, starting from conn-\>next_circ_id,
- * and with the high bit specified by conn-\>circ_id_type, until we get
- * a circ_id that is not in use by any other circuit on that conn.
+/** Search for a value for circ_id that we can use on <b>chan</b> for an
+ * outbound circuit, until we get a circ_id that is not in use by any other
+ * circuit on that conn.
  *
  * Return it, or 0 if can't get a unique circ_id.
  */
-static circid_t
+STATIC circid_t
 get_unique_circ_id_by_chan(channel_t *chan)
 {
+/* This number is chosen somewhat arbitrarily; see comment below for more
+ * info.  When the space is 80% full, it gives a one-in-a-million failure
+ * chance; when the space is 90% full, it gives a one-in-850 chance; and when
+ * the space is 95% full, it gives a one-in-26 failure chance.  That seems
+ * okay, though you could make a case IMO for anything between N=32 and
+ * N=256. */
+#define MAX_CIRCID_ATTEMPTS 64
+  int in_use;
+  unsigned n_with_circ = 0, n_pending_destroy = 0;
   circid_t test_circ_id;
   circid_t attempts=0;
-  circid_t high_bit, max_range;
+  circid_t high_bit, max_range, mask;
 
   tor_assert(chan);
 
@@ -95,25 +109,52 @@ get_unique_circ_id_by_chan(channel_t *chan)
              "a client with no identity.");
     return 0;
   }
-  max_range =  (chan->wide_circ_ids) ? (1u<<31) : (1u<<15);
+  max_range = (chan->wide_circ_ids) ? (1u<<31) : (1u<<15);
+  mask = max_range - 1;
   high_bit = (chan->circ_id_type == CIRC_ID_TYPE_HIGHER) ? max_range : 0;
   do {
-    /* Sequentially iterate over test_circ_id=1...max_range until we find a
-     * circID such that (high_bit|test_circ_id) is not already used. */
-    test_circ_id = chan->next_circ_id++;
-    if (test_circ_id == 0 || test_circ_id >= max_range) {
-      test_circ_id = 1;
-      chan->next_circ_id = 2;
-    }
-    if (++attempts > max_range) {
-      /* Make sure we don't loop forever if all circ_id's are used. This
-       * matters because it's an external DoS opportunity.
+    if (++attempts > MAX_CIRCID_ATTEMPTS) {
+      /* Make sure we don't loop forever because all circuit IDs are used.
+       *
+       * Once, we would try until we had tried every possible circuit ID.  But
+       * that's quite expensive.  Instead, we try MAX_CIRCID_ATTEMPTS random
+       * circuit IDs, and then give up.
+       *
+       * This potentially causes us to give up early if our circuit ID space
+       * is nearly full.  If we have N circuit IDs in use, then we will reject
+       * a new circuit with probability (N / max_range) ^ MAX_CIRCID_ATTEMPTS.
+       * This means that in practice, a few percent of our circuit ID capacity
+       * will go unused.
+       *
+       * The alternative here, though, is to do a linear search over the
+       * whole circuit ID space every time we extend a circuit, which is
+       * not so great either.
        */
-      log_warn(LD_CIRC,"No unused circ IDs. Failing.");
+      log_fn_ratelim(&chan->last_warned_circ_ids_exhausted, LOG_WARN,
+                 LD_CIRC,"No unused circIDs found on channel %s wide "
+                 "circID support, with %u inbound and %u outbound circuits. "
+                 "Found %u circuit IDs in use by circuits, and %u with "
+                 "pending destroy cells."
+                 "Failing a circuit.",
+                 chan->wide_circ_ids ? "with" : "without",
+                 chan->num_p_circuits, chan->num_n_circuits,
+                 n_with_circ, n_pending_destroy);
       return 0;
     }
+
+    do {
+      crypto_rand((char*) &test_circ_id, sizeof(test_circ_id));
+      test_circ_id &= mask;
+    } while (test_circ_id == 0);
+
     test_circ_id |= high_bit;
-  } while (circuit_id_in_use_on_channel(test_circ_id, chan));
+
+    in_use = circuit_id_in_use_on_channel(test_circ_id, chan);
+    if (in_use == 1)
+      ++n_with_circ;
+    else if (in_use == 2)
+      ++n_pending_destroy;
+  } while (in_use);
   return test_circ_id;
 }
 
@@ -269,21 +310,74 @@ circuit_rep_hist_note_result(origin_circuit_t *circ)
   } while (hop!=circ->cpath);
 }
 
+#ifdef CURVE25519_ENABLED
+/** Return 1 iff at least one node in circ's cpath supports ntor. */
+static int
+circuit_cpath_supports_ntor(const origin_circuit_t *circ)
+{
+  crypt_path_t *head, *cpath;
+
+  cpath = head = circ->cpath;
+  do {
+    if (cpath->extend_info &&
+        !tor_mem_is_zero(
+            (const char*)cpath->extend_info->curve25519_onion_key.public_key,
+            CURVE25519_PUBKEY_LEN))
+      return 1;
+
+    cpath = cpath->next;
+  } while (cpath != head);
+
+  return 0;
+}
+#else
+#define circuit_cpath_supports_ntor(circ) 0
+#endif
+
 /** Pick all the entries in our cpath. Stop and return 0 when we're
  * happy, or return -1 if an error occurs. */
 static int
 onion_populate_cpath(origin_circuit_t *circ)
 {
-  int r;
- again:
-  r = onion_extend_cpath(circ);
-  if (r < 0) {
-    log_info(LD_CIRC,"Generating cpath hop failed.");
-    return -1;
+  int n_tries = 0;
+#ifdef CURVE25519_ENABLED
+  const int using_ntor = circuits_can_use_ntor();
+#else
+  const int using_ntor = 0;
+#endif
+
+#define MAX_POPULATE_ATTEMPTS 32
+
+  while (1) {
+    int r = onion_extend_cpath(circ);
+    if (r < 0) {
+      log_info(LD_CIRC,"Generating cpath hop failed.");
+      return -1;
+    }
+    if (r == 1) {
+      /* This circuit doesn't need/shouldn't be forced to have an ntor hop */
+      if (circ->build_state->desired_path_len <= 1 || ! using_ntor)
+        return 0;
+
+      /* This circuit has an ntor hop. great! */
+      if (circuit_cpath_supports_ntor(circ))
+        return 0;
+
+      /* No node in the circuit supports ntor.  Have we already tried too many
+       * times? */
+      if (++n_tries >= MAX_POPULATE_ATTEMPTS)
+        break;
+
+      /* Clear the path and retry */
+      circuit_clear_cpath(circ);
+    }
   }
-  if (r == 0)
-    goto again;
-  return 0; /* if r == 1 */
+  log_warn(LD_CIRC, "I tried for %d times, but I couldn't build a %d-hop "
+           "circuit with at least one node that supports ntor.",
+           MAX_POPULATE_ATTEMPTS,
+           circ->build_state->desired_path_len);
+
+  return -1;
 }
 
 /** Create and return a new origin circuit. Initialize its purpose and
@@ -505,7 +599,9 @@ circuit_deliver_create_cell(circuit_t *circ, const create_cell_t *create_cell,
 
   id = get_unique_circ_id_by_chan(circ->n_chan);
   if (!id) {
-    log_warn(LD_CIRC,"failed to get unique circID.");
+    static ratelim_t circid_warning_limit = RATELIM_INIT(9600);
+    log_fn_ratelim(&circid_warning_limit, LOG_WARN, LD_CIRC,
+                   "failed to get unique circID.");
     return -1;
   }
   log_debug(LD_CIRC,"Chosen circID %u.", (unsigned)id);
@@ -550,27 +646,30 @@ int
 inform_testing_reachability(void)
 {
   char dirbuf[128];
+  char *address;
   const routerinfo_t *me = router_get_my_routerinfo();
   if (!me)
     return 0;
+  address = tor_dup_ip(me->addr);
   control_event_server_status(LOG_NOTICE,
                               "CHECKING_REACHABILITY ORADDRESS=%s:%d",
-                              me->address, me->or_port);
+                              address, me->or_port);
   if (me->dir_port) {
     tor_snprintf(dirbuf, sizeof(dirbuf), " and DirPort %s:%d",
-                 me->address, me->dir_port);
+                 address, me->dir_port);
     control_event_server_status(LOG_NOTICE,
                                 "CHECKING_REACHABILITY DIRADDRESS=%s:%d",
-                                me->address, me->dir_port);
+                                address, me->dir_port);
   }
   log_notice(LD_OR, "Now checking whether ORPort %s:%d%s %s reachable... "
                          "(this may take up to %d minutes -- look for log "
                          "messages indicating success)",
-      me->address, me->or_port,
+      address, me->or_port,
       me->dir_port ? dirbuf : "",
       me->dir_port ? "are" : "is",
       TIMEOUT_UNTIL_UNREACHABILITY_COMPLAINT/60);
 
+  tor_free(address);
   return 1;
 }
 
@@ -1946,6 +2045,9 @@ onion_next_hop_in_cpath(crypt_path_t *cpath)
 
 /** Choose a suitable next hop in the cpath <b>head_ptr</b>,
  * based on <b>state</b>. Append the hop info to head_ptr.
+ *
+ * Return 1 if the path is complete, 0 if we successfully added a hop,
+ * and -1 on error.
  */
 static int
 onion_extend_cpath(origin_circuit_t *circ)

@@ -124,6 +124,7 @@ test_config_addressmap(void *arg)
   test_assert(!addressmap_rewrite(address, sizeof(address), &expires, NULL));
 
   /* Test top-level-domain matching a bit harder */
+  config_free_lines(get_options_mutable()->AddressMap);
   addressmap_clear_configured();
   strlcpy(buf, "MapAddress *.com *.torserver.exit\n"
           "MapAddress *.torproject.org 1.1.1.1\n"
@@ -153,6 +154,7 @@ test_config_addressmap(void *arg)
   test_streq(address, "2.2.2.2");
 
   /* We don't support '*' as a mapping directive */
+  config_free_lines(get_options_mutable()->AddressMap);
   addressmap_clear_configured();
   strlcpy(buf, "MapAddress * *.torserver.exit\n", sizeof(buf));
   config_get_lines(buf, &(get_options_mutable()->AddressMap), 0);
@@ -170,7 +172,8 @@ test_config_addressmap(void *arg)
 #undef addressmap_rewrite
 
  done:
-  ;
+  config_free_lines(get_options_mutable()->AddressMap);
+  get_options_mutable()->AddressMap = NULL;
 }
 
 static int
@@ -193,15 +196,19 @@ static void
 test_config_check_or_create_data_subdir(void *arg)
 {
   or_options_t *options = get_options_mutable();
-  char *datadir = options->DataDirectory = tor_strdup(get_fname("datadir-0"));
+  char *datadir;
   const char *subdir = "test_stats";
-  char *subpath = get_datadir_fname(subdir);
+  char *subpath;
   struct stat st;
   int r;
 #if !defined (_WIN32) || defined (WINCE)
   unsigned group_permission;
 #endif
   (void)arg;
+
+  tor_free(options->DataDirectory);
+  datadir = options->DataDirectory = tor_strdup(get_fname("datadir-0"));
+  subpath = get_datadir_fname(subdir);
 
 #if defined (_WIN32) && !defined (WINCE)
   tt_int_op(mkdir(options->DataDirectory), ==, 0);
@@ -221,12 +228,17 @@ test_config_check_or_create_data_subdir(void *arg)
   // and is private to the user.
   test_assert(!check_or_create_data_subdir(subdir));
 
+  r = stat(subpath, &st);
+  if (r) {
+    tt_abort_perror("stat");
+  }
+
 #if !defined (_WIN32) || defined (WINCE)
   group_permission = st.st_mode | 0070;
   r = chmod(subpath, group_permission);
 
   if (r) {
-    test_fail_msg("Changing permissions for the subdirectory failed.");
+    tt_abort_perror("chmod");
   }
 
   // If the directory exists, but its mode is too permissive
@@ -246,7 +258,8 @@ static void
 test_config_write_to_data_subdir(void *arg)
 {
   or_options_t* options = get_options_mutable();
-  char *datadir = options->DataDirectory = tor_strdup(get_fname("datadir-1"));
+  char *datadir;
+  char *cp = NULL;
   const char* subdir = "test_stats";
   const char* fname = "test_file";
   const char* str =
@@ -264,8 +277,12 @@ test_config_write_to_data_subdir(void *arg)
       "accusam et justo duo dolores et\n"
       "ea rebum. Stet clita kasd gubergren, no sea takimata\n"
       "sanctus est Lorem ipsum dolor sit amet.";
-  char* filepath = get_datadir_fname2(subdir, fname);
+  char* filepath = NULL;
   (void)arg;
+
+  tor_free(options->DataDirectory);
+  datadir = options->DataDirectory = tor_strdup(get_fname("datadir-1"));
+  filepath = get_datadir_fname2(subdir, fname);
 
 #if defined (_WIN32) && !defined (WINCE)
   tt_int_op(mkdir(options->DataDirectory), ==, 0);
@@ -280,17 +297,22 @@ test_config_write_to_data_subdir(void *arg)
   // Content of file after write attempt should be
   // equal to the original string.
   test_assert(!write_to_data_subdir(subdir, fname, str, NULL));
-  test_streq(read_file_to_str(filepath, 0, NULL), str);
+  cp = read_file_to_str(filepath, 0, NULL);
+  test_streq(cp, str);
+  tor_free(cp);
 
   // A second write operation should overwrite the old content.
   test_assert(!write_to_data_subdir(subdir, fname, str, NULL));
-  test_streq(read_file_to_str(filepath, 0, NULL), str);
+  cp = read_file_to_str(filepath, 0, NULL);
+  test_streq(cp, str);
+  tor_free(cp);
 
  done:
   (void) unlink(filepath);
   rmdir(options->DataDirectory);
   tor_free(datadir);
   tor_free(filepath);
+  tor_free(cp);
 }
 
 /* Test helper function: Make sure that a bridge line gets parsed
@@ -358,6 +380,8 @@ static void
 bad_bridge_line_test(const char *string)
 {
   bridge_line_t *bridge_line = parse_bridge_line(string);
+  if (bridge_line)
+    TT_FAIL(("%s was supposed to fail, but it didn't.", string));
   test_assert(!bridge_line);
 
  done:
@@ -403,6 +427,23 @@ test_config_parse_bridge_line(void *arg)
 
     good_bridge_line_test("transport 192.0.2.1:12 twoandtwo=five z=z",
                           "192.0.2.1:12", NULL, "transport", sl_tmp);
+
+    SMARTLIST_FOREACH(sl_tmp, char *, s, tor_free(s));
+    smartlist_free(sl_tmp);
+  }
+
+  {
+    smartlist_t *sl_tmp = smartlist_new();
+    smartlist_add_asprintf(sl_tmp, "dub=come");
+    smartlist_add_asprintf(sl_tmp, "save=me");
+
+    good_bridge_line_test("transport 192.0.2.1:12 "
+                          "4352e58420e68f5e40bf7c74faddccd9d1349666 "
+                          "dub=come save=me",
+
+                          "192.0.2.1:12",
+                          "4352e58420e68f5e40bf7c74faddccd9d1349666",
+                          "transport", sl_tmp);
 
     SMARTLIST_FOREACH(sl_tmp, char *, s, tor_free(s));
     smartlist_free(sl_tmp);

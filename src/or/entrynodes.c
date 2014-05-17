@@ -70,7 +70,9 @@ static int entry_guards_dirty = 0;
 static void bridge_free(bridge_info_t *bridge);
 static const node_t *choose_random_entry_impl(cpath_build_state_t *state,
                                               int for_directory,
-                                              dirinfo_type_t dirtype);
+                                              dirinfo_type_t dirtype,
+                                              int *n_options_out);
+static int num_bridges_usable(void);
 
 /** Return the list of entry guards, creating it if necessary. */
 const smartlist_t *
@@ -376,7 +378,7 @@ add_an_entry_guard(const node_t *chosen, int reset_status, int prepend,
   } else {
     const routerstatus_t *rs;
     rs = router_pick_directory_server(MICRODESC_DIRINFO|V3_DIRINFO,
-                              PDS_PREFER_TUNNELED_DIR_CONNS_|PDS_FOR_GUARD);
+                                      PDS_FOR_GUARD);
     if (!rs)
       return NULL;
     node = node_get_by_id(rs->identity_digest);
@@ -982,7 +984,7 @@ node_can_handle_dirinfo(const node_t *node, dirinfo_type_t dirinfo)
 const node_t *
 choose_random_entry(cpath_build_state_t *state)
 {
-  return choose_random_entry_impl(state, 0, 0);
+  return choose_random_entry_impl(state, 0, 0, NULL);
 }
 
 /** Pick a live (up and listed) directory guard from entry_guards for
@@ -990,13 +992,13 @@ choose_random_entry(cpath_build_state_t *state)
 const node_t *
 choose_random_dirguard(dirinfo_type_t type)
 {
-  return choose_random_entry_impl(NULL, 1, type);
+  return choose_random_entry_impl(NULL, 1, type, NULL);
 }
 
 /** Helper for choose_random{entry,dirguard}. */
 static const node_t *
 choose_random_entry_impl(cpath_build_state_t *state, int for_directory,
-                         dirinfo_type_t dirinfo_type)
+                         dirinfo_type_t dirinfo_type, int *n_options_out)
 {
   const or_options_t *options = get_options();
   smartlist_t *live_entry_guards = smartlist_new();
@@ -1009,6 +1011,9 @@ choose_random_entry_impl(cpath_build_state_t *state, int for_directory,
   int preferred_min, consider_exit_family = 0;
   int need_descriptor = !for_directory;
   const int num_needed = decide_num_guards(options, for_directory);
+
+  if (n_options_out)
+    *n_options_out = 0;
 
   if (chosen_exit) {
     nodelist_add_node_and_family(exit_family, chosen_exit);
@@ -1136,6 +1141,8 @@ choose_random_entry_impl(cpath_build_state_t *state, int for_directory,
      * *double*-weight our guard selection. */
     node = smartlist_choose(live_entry_guards);
   }
+  if (n_options_out)
+    *n_options_out = smartlist_len(live_entry_guards);
   smartlist_free(live_entry_guards);
   smartlist_free(exit_family);
   return node;
@@ -1967,7 +1974,6 @@ get_socks_args_by_bridge_addrport(const tor_addr_t *addr, uint16_t port)
 static void
 launch_direct_bridge_descriptor_fetch(bridge_info_t *bridge)
 {
-  char *address;
   const or_options_t *options = get_options();
 
   if (connection_get_by_type_addr_port_purpose(
@@ -1982,15 +1988,12 @@ launch_direct_bridge_descriptor_fetch(bridge_info_t *bridge)
     return;
   }
 
-  address = tor_dup_addr(&bridge->addr);
-
-  directory_initiate_command(address, &bridge->addr,
+  directory_initiate_command(&bridge->addr,
                              bridge->port, 0/*no dirport*/,
                              bridge->identity,
                              DIR_PURPOSE_FETCH_SERVERDESC,
                              ROUTER_PURPOSE_BRIDGE,
                              DIRIND_ONEHOP, "authority.z", NULL, 0, 0);
-  tor_free(address);
 }
 
 /** Fetching the bridge descriptor from the bridge authority returned a
@@ -2108,13 +2111,11 @@ rewrite_node_address_for_bridge(const bridge_info_t *bridge, node_t *node)
     } else {
       if (tor_addr_family(&bridge->addr) == AF_INET) {
         ri->addr = tor_addr_to_ipv4h(&bridge->addr);
-        tor_free(ri->address);
-        ri->address = tor_dup_ip(ri->addr);
         ri->or_port = bridge->port;
         log_info(LD_DIR,
                  "Adjusted bridge routerinfo for '%s' to match configured "
                  "address %s:%d.",
-                 ri->nickname, ri->address, ri->or_port);
+                 ri->nickname, fmt_addr32(ri->addr), ri->or_port);
       } else if (tor_addr_family(&bridge->addr) == AF_INET6) {
         tor_addr_copy(&ri->ipv6_addr, &bridge->addr);
         ri->ipv6_orport = bridge->port;
@@ -2172,7 +2173,7 @@ learned_bridge_descriptor(routerinfo_t *ri, int from_cache)
   tor_assert(ri);
   tor_assert(ri->purpose == ROUTER_PURPOSE_BRIDGE);
   if (get_options()->UseBridges) {
-    int first = !any_bridge_descriptors_known();
+    int first = num_bridges_usable() <= 1;
     bridge_info_t *bridge = get_configured_bridge_by_routerinfo(ri);
     time_t now = time(NULL);
     router_set_status(ri->cache_info.identity_digest, 1);
@@ -2194,14 +2195,15 @@ learned_bridge_descriptor(routerinfo_t *ri, int from_cache)
        * our entry node list */
       entry_guard_register_connect_status(ri->cache_info.identity_digest,
                                           1, 0, now);
-      if (first)
+      if (first) {
         routerlist_retry_directory_downloads(now);
+      }
     }
   }
 }
 
-/** Return 1 if any of our entry guards have descriptors that
- * are marked with purpose 'bridge' and are running. Else return 0.
+/** Return the number of bridges that have descriptors that
+ * are marked with purpose 'bridge' and are running.
  *
  * We use this function to decide if we're ready to start building
  * circuits through our bridges, or if we need to wait until the
@@ -2213,25 +2215,16 @@ any_bridge_descriptors_known(void)
   return choose_random_entry(NULL) != NULL;
 }
 
-/** Return 1 if there are any directory conns fetching bridge descriptors
- * that aren't marked for close. We use this to guess if we should tell
- * the controller that we have a problem. */
-int
-any_pending_bridge_descriptor_fetches(void)
+/** Return the number of bridges that have descriptors that are marked with
+ * purpose 'bridge' and are running.
+ */
+static int
+num_bridges_usable(void)
 {
-  smartlist_t *conns = get_connection_array();
-  SMARTLIST_FOREACH_BEGIN(conns, connection_t *, conn) {
-    if (conn->type == CONN_TYPE_DIR &&
-        conn->purpose == DIR_PURPOSE_FETCH_SERVERDESC &&
-        TO_DIR_CONN(conn)->router_purpose == ROUTER_PURPOSE_BRIDGE &&
-        !conn->marked_for_close &&
-        conn->linked &&
-        conn->linked_conn && !conn->linked_conn->marked_for_close) {
-      log_debug(LD_DIR, "found one: %s", conn->address);
-      return 1;
-    }
-  } SMARTLIST_FOREACH_END(conn);
-  return 0;
+  int n_options = 0;
+  tor_assert(get_options()->UseBridges);
+  (void) choose_random_entry_impl(NULL, 0, 0, &n_options);
+  return n_options;
 }
 
 /** Return 1 if we have at least one descriptor for an entry guard

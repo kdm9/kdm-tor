@@ -172,6 +172,7 @@ test_ext_or_init_auth(void *arg)
   (void)arg;
 
   /* Check default filename location */
+  tor_free(options->DataDirectory);
   options->DataDirectory = tor_strdup("foo");
   cp = get_ext_or_auth_cookie_file_name();
   tt_str_op(cp, ==, "foo"PATH_SEPARATOR"extended_orport_auth_cookie");
@@ -201,7 +202,7 @@ test_ext_or_init_auth(void *arg)
   tt_int_op(ext_or_auth_cookie_is_set, ==, 1);
   cp = read_file_to_str(fn, RFTS_BIN, &st);
   tt_ptr_op(cp, !=, NULL);
-  tt_int_op(st.st_size, ==, 64);
+  tt_u64_op((uint64_t)st.st_size, ==, 64);
   test_memeq(cp, "! Extended ORPort Auth Cookie !\x0a", 32);
   test_memeq(cp+32, ext_or_auth_cookie, 32);
   memcpy(cookie0, ext_or_auth_cookie, 32);
@@ -337,7 +338,7 @@ test_ext_or_cookie_auth_testvec(void *arg)
             handle_client_auth_nonce(client_nonce, 32, &client_hash, &reply,
                                      &reply_len));
   tt_ptr_op(reply, !=, NULL );
-  tt_ptr_op(reply_len, ==, 64);
+  tt_uint_op(reply_len, ==, 64);
   test_memeq(reply+32, "te road There is always another ", 32);
   /* HMACSHA256("Gliding wrapt in a brown mantle,"
    *     "ExtORPort authentication server-to-client hash"
@@ -363,10 +364,12 @@ test_ext_or_cookie_auth_testvec(void *arg)
 }
 
 static void
-ignore_bootstrap_problem(const char *warn, int reason)
+ignore_bootstrap_problem(const char *warn, int reason,
+                         or_connection_t *conn)
 {
   (void)warn;
   (void)reason;
+  (void)conn;
 }
 
 static int is_reading = 1;

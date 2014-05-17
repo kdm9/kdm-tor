@@ -169,6 +169,7 @@ extern INLINE double U64_TO_DBL(uint64_t x) {
  *
  * #define ATTR_NONNULL(x) __attribute__((nonnull x)) */
 #define ATTR_NONNULL(x)
+#define ATTR_UNUSED __attribute__ ((unused))
 
 /** Macro: Evaluates to <b>exp</b> and hints the compiler that the value
  * of <b>exp</b> will probably be true.
@@ -192,6 +193,7 @@ extern INLINE double U64_TO_DBL(uint64_t x) {
 #define ATTR_MALLOC
 #define ATTR_NORETURN
 #define ATTR_NONNULL(x)
+#define ATTR_UNUSED
 #define PREDICT_LIKELY(exp) (exp)
 #define PREDICT_UNLIKELY(exp) (exp)
 #endif
@@ -290,7 +292,7 @@ typedef struct tor_mmap_t {
 } tor_mmap_t;
 
 tor_mmap_t *tor_mmap_file(const char *filename) ATTR_NONNULL((1));
-void tor_munmap_file(tor_mmap_t *handle) ATTR_NONNULL((1));
+int tor_munmap_file(tor_mmap_t *handle) ATTR_NONNULL((1));
 
 int tor_snprintf(char *str, size_t size, const char *format, ...)
   CHECK_PRINTF(3,4) ATTR_NONNULL((1,3));
@@ -319,7 +321,7 @@ tor_memstr(const void *haystack, size_t hlen, const char *needle)
   extern const uint32_t TOR_##name##_TABLE[];                           \
   static INLINE int TOR_##name(char c) {                                \
     uint8_t u = c;                                                      \
-    return !!(TOR_##name##_TABLE[(u >> 5) & 7] & (1 << (u & 31)));      \
+    return !!(TOR_##name##_TABLE[(u >> 5) & 7] & (1u << (u & 31)));     \
   }
 DECLARE_CTYPE_FN(ISALPHA)
 DECLARE_CTYPE_FN(ISALNUM)
@@ -408,6 +410,7 @@ struct tm *tor_gmtime_r(const time_t *timep, struct tm *result);
 /* ===== File compatibility */
 int tor_open_cloexec(const char *path, int flags, unsigned mode);
 FILE *tor_fopen_cloexec(const char *path, const char *mode);
+int tor_rename(const char *path_old, const char *path_new);
 
 int replace_file(const char *from, const char *to);
 int touch_file(const char *fname);
@@ -630,10 +633,17 @@ int switch_id(const char *user);
 char *get_user_homedir(const char *username);
 #endif
 
+#ifndef _WIN32
+const struct passwd *tor_getpwnam(const char *username);
+const struct passwd *tor_getpwuid(uid_t uid);
+#endif
+
 int get_parent_directory(char *fname);
 char *make_path_absolute(char *fname);
 
 char **get_environment(void);
+
+int get_total_system_memory(size_t *mem_out);
 
 int spawn_func(void (*func)(void *), void *data);
 void spawn_exit(void) ATTR_NORETURN;

@@ -2,9 +2,11 @@
 /* See LICENSE for licensing information */
 
 #define TOR_CHANNEL_INTERNAL_
+#define CIRCUITBUILD_PRIVATE
 #define CIRCUITLIST_PRIVATE
 #include "or.h"
 #include "channel.h"
+#include "circuitbuild.h"
 #include "circuitlist.h"
 #include "test.h"
 
@@ -51,7 +53,7 @@ circuitmux_detach_mock(circuitmux_t *cmux, circuit_t *circ)
     tt_int_op(cam.ncalls, ==, 1);                \
     tt_ptr_op(cam.cmux, ==, (mux_));             \
     tt_ptr_op(cam.circ, ==, (circ_));            \
-    tt_ptr_op(cam.dir, ==, (dir_));              \
+    tt_int_op(cam.dir, ==, (dir_));              \
     memset(&cam, 0, sizeof(cam));                \
   } while (0)
 
@@ -150,19 +152,191 @@ test_clist_maps(void *arg)
   tt_assert(! circuit_id_in_use_on_channel(100, ch1));
 
  done:
-  tor_free(ch1);
-  tor_free(ch2);
-  tor_free(ch3);
   if (or_c1)
     circuit_free(TO_CIRCUIT(or_c1));
   if (or_c2)
     circuit_free(TO_CIRCUIT(or_c2));
+  tor_free(ch1);
+  tor_free(ch2);
+  tor_free(ch3);
   UNMOCK(circuitmux_attach_circuit);
   UNMOCK(circuitmux_detach_circuit);
 }
 
+static void
+test_rend_token_maps(void *arg)
+{
+  or_circuit_t *c1, *c2, *c3, *c4;
+  const uint8_t tok1[REND_TOKEN_LEN] = "The cat can't tell y";
+  const uint8_t tok2[REND_TOKEN_LEN] = "ou its name, and it ";
+  const uint8_t tok3[REND_TOKEN_LEN] = "doesn't really care.";
+  /* -- Adapted from a quote by Fredrik Lundh. */
+
+  (void)arg;
+  (void)tok1; //xxxx
+  c1 = or_circuit_new(0, NULL);
+  c2 = or_circuit_new(0, NULL);
+  c3 = or_circuit_new(0, NULL);
+  c4 = or_circuit_new(0, NULL);
+
+  /* Make sure we really filled up the tok* variables */
+  tt_int_op(tok1[REND_TOKEN_LEN-1], ==, 'y');
+  tt_int_op(tok2[REND_TOKEN_LEN-1], ==, ' ');
+  tt_int_op(tok3[REND_TOKEN_LEN-1], ==, '.');
+
+  /* No maps; nothing there. */
+  tt_ptr_op(NULL, ==, circuit_get_rendezvous(tok1));
+  tt_ptr_op(NULL, ==, circuit_get_intro_point(tok1));
+
+  circuit_set_rendezvous_cookie(c1, tok1);
+  circuit_set_intro_point_digest(c2, tok2);
+
+  tt_ptr_op(NULL, ==, circuit_get_rendezvous(tok3));
+  tt_ptr_op(NULL, ==, circuit_get_intro_point(tok3));
+  tt_ptr_op(NULL, ==, circuit_get_rendezvous(tok2));
+  tt_ptr_op(NULL, ==, circuit_get_intro_point(tok1));
+
+  /* Without purpose set, we don't get the circuits */
+  tt_ptr_op(NULL, ==, circuit_get_rendezvous(tok1));
+  tt_ptr_op(NULL, ==, circuit_get_intro_point(tok2));
+
+  c1->base_.purpose = CIRCUIT_PURPOSE_REND_POINT_WAITING;
+  c2->base_.purpose = CIRCUIT_PURPOSE_INTRO_POINT;
+
+  /* Okay, make sure they show up now. */
+  tt_ptr_op(c1, ==, circuit_get_rendezvous(tok1));
+  tt_ptr_op(c2, ==, circuit_get_intro_point(tok2));
+
+  /* Two items at the same place with the same token. */
+  c3->base_.purpose = CIRCUIT_PURPOSE_REND_POINT_WAITING;
+  circuit_set_rendezvous_cookie(c3, tok2);
+  tt_ptr_op(c2, ==, circuit_get_intro_point(tok2));
+  tt_ptr_op(c3, ==, circuit_get_rendezvous(tok2));
+
+  /* Marking a circuit makes it not get returned any more */
+  circuit_mark_for_close(TO_CIRCUIT(c1), END_CIRC_REASON_FINISHED);
+  tt_ptr_op(NULL, ==, circuit_get_rendezvous(tok1));
+  circuit_free(TO_CIRCUIT(c1));
+  c1 = NULL;
+
+  /* Freeing a circuit makes it not get returned any more. */
+  circuit_free(TO_CIRCUIT(c2));
+  c2 = NULL;
+  tt_ptr_op(NULL, ==, circuit_get_intro_point(tok2));
+
+  /* c3 -- are you still there? */
+  tt_ptr_op(c3, ==, circuit_get_rendezvous(tok2));
+  /* Change its cookie.  This never happens in Tor per se, but hey. */
+  c3->base_.purpose = CIRCUIT_PURPOSE_INTRO_POINT;
+  circuit_set_intro_point_digest(c3, tok3);
+
+  tt_ptr_op(NULL, ==, circuit_get_rendezvous(tok2));
+  tt_ptr_op(c3, ==, circuit_get_intro_point(tok3));
+
+  /* Now replace c3 with c4. */
+  c4->base_.purpose = CIRCUIT_PURPOSE_INTRO_POINT;
+  circuit_set_intro_point_digest(c4, tok3);
+
+  tt_ptr_op(c4, ==, circuit_get_intro_point(tok3));
+
+  tt_ptr_op(c3->rendinfo, ==, NULL);
+  tt_ptr_op(c4->rendinfo, !=, NULL);
+  test_mem_op(c4->rendinfo, ==, tok3, REND_TOKEN_LEN);
+
+  /* Now clear c4's cookie. */
+  circuit_set_intro_point_digest(c4, NULL);
+  tt_ptr_op(c4->rendinfo, ==, NULL);
+  tt_ptr_op(NULL, ==, circuit_get_intro_point(tok3));
+
+ done:
+  if (c1)
+    circuit_free(TO_CIRCUIT(c1));
+  if (c2)
+    circuit_free(TO_CIRCUIT(c2));
+  if (c3)
+    circuit_free(TO_CIRCUIT(c3));
+  if (c4)
+    circuit_free(TO_CIRCUIT(c4));
+}
+
+static void
+test_pick_circid(void *arg)
+{
+  bitarray_t *ba = NULL;
+  channel_t *chan1, *chan2;
+  circid_t circid;
+  int i;
+  (void) arg;
+
+  chan1 = tor_malloc_zero(sizeof(channel_t));
+  chan2 = tor_malloc_zero(sizeof(channel_t));
+  chan2->wide_circ_ids = 1;
+
+  chan1->circ_id_type = CIRC_ID_TYPE_NEITHER;
+  tt_int_op(0, ==, get_unique_circ_id_by_chan(chan1));
+
+  /* Basic tests, with no collisions */
+  chan1->circ_id_type = CIRC_ID_TYPE_LOWER;
+  for (i = 0; i < 50; ++i) {
+    circid = get_unique_circ_id_by_chan(chan1);
+    tt_uint_op(0, <, circid);
+    tt_uint_op(circid, <, (1<<15));
+  }
+  chan1->circ_id_type = CIRC_ID_TYPE_HIGHER;
+  for (i = 0; i < 50; ++i) {
+    circid = get_unique_circ_id_by_chan(chan1);
+    tt_uint_op((1<<15), <, circid);
+    tt_uint_op(circid, <, (1<<16));
+  }
+
+  chan2->circ_id_type = CIRC_ID_TYPE_LOWER;
+  for (i = 0; i < 50; ++i) {
+    circid = get_unique_circ_id_by_chan(chan2);
+    tt_uint_op(0, <, circid);
+    tt_uint_op(circid, <, (1u<<31));
+  }
+  chan2->circ_id_type = CIRC_ID_TYPE_HIGHER;
+  for (i = 0; i < 50; ++i) {
+    circid = get_unique_circ_id_by_chan(chan2);
+    tt_uint_op((1u<<31), <, circid);
+  }
+
+  /* Now make sure that we can behave well when we are full up on circuits */
+  chan1->circ_id_type = CIRC_ID_TYPE_LOWER;
+  chan2->circ_id_type = CIRC_ID_TYPE_LOWER;
+  chan1->wide_circ_ids = chan2->wide_circ_ids = 0;
+  ba = bitarray_init_zero((1<<15));
+  for (i = 0; i < (1<<15); ++i) {
+    circid = get_unique_circ_id_by_chan(chan1);
+    if (circid == 0) {
+      tt_int_op(i, >, (1<<14));
+      break;
+    }
+    tt_uint_op(circid, <, (1<<15));
+    tt_assert(! bitarray_is_set(ba, circid));
+    bitarray_set(ba, circid);
+    channel_mark_circid_unusable(chan1, circid);
+  }
+  tt_int_op(i, <, (1<<15));
+  /* Make sure that being full on chan1 does not interfere with chan2 */
+  for (i = 0; i < 100; ++i) {
+    circid = get_unique_circ_id_by_chan(chan2);
+    tt_uint_op(circid, >, 0);
+    tt_uint_op(circid, <, (1<<15));
+    channel_mark_circid_unusable(chan2, circid);
+  }
+
+ done:
+  tor_free(chan1);
+  tor_free(chan2);
+  bitarray_free(ba);
+  circuit_free_all();
+}
+
 struct testcase_t circuitlist_tests[] = {
   { "maps", test_clist_maps, TT_FORK, NULL, NULL },
+  { "rend_token_maps", test_rend_token_maps, TT_FORK, NULL, NULL },
+  { "pick_circid", test_pick_circid, TT_FORK, NULL, NULL },
   END_OF_TESTCASES
 };
 

@@ -95,12 +95,7 @@ typedef struct channel_idmap_entry_s {
 static INLINE unsigned
 channel_idmap_hash(const channel_idmap_entry_t *ent)
 {
-  const unsigned *a = (const unsigned *)ent->digest;
-#if SIZEOF_INT == 4
-  return a[0] ^ a[1] ^ a[2] ^ a[3] ^ a[4];
-#elif SIZEOF_INT == 8
-  return a[0] ^ a[1];
-#endif
+  return (unsigned) siphash24g(ent->digest, DIGEST_LEN);
 }
 
 static INLINE int
@@ -733,8 +728,8 @@ channel_init(channel_t *chan)
   /* Init timestamp */
   chan->timestamp_last_added_nonpadding = time(NULL);
 
-  /* Init next_circ_id */
-  chan->next_circ_id = crypto_rand_int(1 << 15);
+  /* Warn about exhausted circuit IDs no more than hourly. */
+  chan->last_warned_circ_ids_exhausted.rate = 3600;
 
   /* Initialize queues. */
   TOR_SIMPLEQ_INIT(&chan->incoming_queue);
@@ -805,7 +800,7 @@ channel_free(channel_t *chan)
 
   /* Get rid of cmux */
   if (chan->cmux) {
-    circuitmux_detach_all_circuits(chan->cmux);
+    circuitmux_detach_all_circuits(chan->cmux, NULL);
     circuitmux_mark_destroyed_circids_usable(chan->cmux, chan);
     circuitmux_free(chan->cmux);
     chan->cmux = NULL;
@@ -2865,7 +2860,7 @@ channel_free_list(smartlist_t *channels, int mark_for_close)
               channel_state_to_string(curr->state), curr->state);
     /* Detach circuits early so they can find the channel */
     if (curr->cmux) {
-      circuitmux_detach_all_circuits(curr->cmux);
+      circuitmux_detach_all_circuits(curr->cmux, NULL);
     }
     channel_unregister(curr);
     if (mark_for_close) {

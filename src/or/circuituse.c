@@ -296,7 +296,7 @@ circuit_get_best(const entry_connection_t *conn,
     }
 
     if (!circuit_is_acceptable(origin_circ,conn,must_be_open,purpose,
-                               need_uptime,need_internal,now.tv_sec))
+                               need_uptime,need_internal, (time_t)now.tv_sec))
       continue;
 
     /* now this is an acceptable circ to hand back. but that doesn't
@@ -537,7 +537,9 @@ circuit_expire_building(void)
                  "%d guards are live.",
                  TO_ORIGIN_CIRCUIT(victim)->global_identifier,
                  circuit_purpose_to_string(victim->purpose),
-                 TO_ORIGIN_CIRCUIT(victim)->build_state->desired_path_len,
+                 TO_ORIGIN_CIRCUIT(victim)->build_state ?
+                   TO_ORIGIN_CIRCUIT(victim)->build_state->desired_path_len :
+                   -1,
                  circuit_state_to_string(victim->state),
                  channel_state_to_string(victim->n_chan->state),
                  num_live_entry_guards(0));
@@ -561,7 +563,9 @@ circuit_expire_building(void)
                  "anyway. %d guards are live.",
                  TO_ORIGIN_CIRCUIT(victim)->global_identifier,
                  circuit_purpose_to_string(victim->purpose),
-                 TO_ORIGIN_CIRCUIT(victim)->build_state->desired_path_len,
+                 TO_ORIGIN_CIRCUIT(victim)->build_state ?
+                   TO_ORIGIN_CIRCUIT(victim)->build_state->desired_path_len :
+                   -1,
                  circuit_state_to_string(victim->state),
                  channel_state_to_string(victim->n_chan->state),
                  (long)build_close_ms,
@@ -679,9 +683,9 @@ circuit_expire_building(void)
                      victim->purpose,
                      circuit_purpose_to_string(victim->purpose));
         } else if (circuit_build_times_count_close(
-                                         get_circuit_build_times_mutable(),
-                                         first_hop_succeeded,
-                                         victim->timestamp_created.tv_sec)) {
+            get_circuit_build_times_mutable(),
+            first_hop_succeeded,
+            (time_t)victim->timestamp_created.tv_sec)) {
           circuit_build_times_set_timeout(get_circuit_build_times_mutable());
         }
       }
@@ -707,7 +711,8 @@ circuit_expire_building(void)
          * and we have tried to send an INTRODUCE1 cell specifying it.
          * Thus, if the pending_final_cpath field *is* NULL, then we
          * want to not spare it. */
-        if (TO_ORIGIN_CIRCUIT(victim)->build_state->pending_final_cpath ==
+        if (TO_ORIGIN_CIRCUIT(victim)->build_state &&
+            TO_ORIGIN_CIRCUIT(victim)->build_state->pending_final_cpath ==
             NULL)
           break;
         /* fallthrough! */
@@ -753,7 +758,9 @@ circuit_expire_building(void)
                TO_ORIGIN_CIRCUIT(victim)->has_opened,
                victim->state, circuit_state_to_string(victim->state),
                victim->purpose,
-               TO_ORIGIN_CIRCUIT(victim)->build_state->desired_path_len);
+               TO_ORIGIN_CIRCUIT(victim)->build_state ?
+                 TO_ORIGIN_CIRCUIT(victim)->build_state->desired_path_len :
+                 -1);
     else
       log_info(LD_CIRC,
                "Abandoning circ %u %u (state %d,%d:%s, purpose %d, len %d)",
@@ -762,7 +769,9 @@ circuit_expire_building(void)
                TO_ORIGIN_CIRCUIT(victim)->has_opened,
                victim->state,
                circuit_state_to_string(victim->state), victim->purpose,
-               TO_ORIGIN_CIRCUIT(victim)->build_state->desired_path_len);
+               TO_ORIGIN_CIRCUIT(victim)->build_state ?
+                 TO_ORIGIN_CIRCUIT(victim)->build_state->desired_path_len :
+                 -1);
 
     circuit_log_path(LOG_INFO,LD_CIRC,TO_ORIGIN_CIRCUIT(victim));
     if (victim->purpose == CIRCUIT_PURPOSE_C_MEASURE_TIMEOUT)
@@ -772,6 +781,64 @@ circuit_expire_building(void)
 
     pathbias_count_timeout(TO_ORIGIN_CIRCUIT(victim));
   }
+}
+
+/**
+ * As a diagnostic for bug 8387, log information about how many one-hop
+ * circuits we have around that have been there for at least <b>age</b>
+ * seconds. Log a few of them.
+ */
+void
+circuit_log_ancient_one_hop_circuits(int age)
+{
+#define MAX_ANCIENT_ONEHOP_CIRCUITS_TO_LOG 10
+  time_t cutoff = time(NULL) - age;
+  int n_found = 0;
+  smartlist_t *log_these = smartlist_new();
+  const circuit_t *circ;
+
+  TOR_LIST_FOREACH(circ, circuit_get_global_list(), head) {
+    const origin_circuit_t *ocirc;
+    if (! CIRCUIT_IS_ORIGIN(circ))
+      continue;
+    if (circ->timestamp_created.tv_sec >= cutoff)
+      continue;
+    ocirc = CONST_TO_ORIGIN_CIRCUIT(circ);
+
+    if (ocirc->build_state && ocirc->build_state->onehop_tunnel) {
+      ++n_found;
+
+      if (smartlist_len(log_these) < MAX_ANCIENT_ONEHOP_CIRCUITS_TO_LOG)
+        smartlist_add(log_these, (origin_circuit_t*) ocirc);
+    }
+  }
+
+  if (n_found == 0)
+    goto done;
+
+  log_notice(LD_HEARTBEAT,
+             "Diagnostic for issue 8387: Found %d one-hop circuits more "
+             "than %d seconds old! Logging %d...",
+             n_found, age, smartlist_len(log_these));
+
+  SMARTLIST_FOREACH_BEGIN(log_these, const origin_circuit_t *, ocirc) {
+    char created[ISO_TIME_LEN+1];
+    circ = TO_CIRCUIT(ocirc);
+    format_local_iso_time(created,
+                          (time_t)circ->timestamp_created.tv_sec);
+
+    log_notice(LD_HEARTBEAT, "  #%d created at %s. %s, %s. %s for close. "
+               "%s for new conns.",
+               ocirc_sl_idx,
+               created,
+               circuit_state_to_string(circ->state),
+               circuit_purpose_to_string(circ->purpose),
+               circ->marked_for_close ? "Marked" : "Not marked",
+               ocirc->unusable_for_new_conns ? "Not usable" : "usable");
+  } SMARTLIST_FOREACH_END(ocirc);
+
+ done:
+  smartlist_free(log_these);
 }
 
 /** Remove any elements in <b>needed_ports</b> that are handled by an
@@ -1515,7 +1582,7 @@ circuit_launch_by_extend_info(uint8_t purpose,
     circ = circuit_find_to_cannibalize(purpose, extend_info, flags);
     if (circ) {
       uint8_t old_purpose = circ->base_.purpose;
-      struct timeval old_timestamp_began;
+      struct timeval old_timestamp_began = circ->base_.timestamp_began;
 
       log_info(LD_CIRC,"Cannibalizing circ '%s' for purpose %d (%s)",
                build_state_get_exit_nickname(circ->build_state), purpose,

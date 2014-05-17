@@ -303,7 +303,7 @@ tor_memdup_(const void *mem, size_t len DMALLOC_PARAMS)
 /** As tor_memdup(), but add an extra 0 byte at the end of the resulting
  * memory. */
 void *
-tor_memdup_nulterm(const void *mem, size_t len DMALLOC_PARAMS)
+tor_memdup_nulterm_(const void *mem, size_t len DMALLOC_PARAMS)
 {
   char *dup;
   tor_assert(len < SIZE_T_CEILING+1);
@@ -898,8 +898,8 @@ tor_digest_is_zero(const char *digest)
   return tor_memeq(digest, ZERO_DIGEST, DIGEST_LEN);
 }
 
-/** Return true if <b>string</b> is a valid '<key>=[<value>]' string.
- *  <value> is optional, to indicate the empty string. Log at logging
+/** Return true if <b>string</b> is a valid 'key=[value]' string.
+ *  "value" is optional, to indicate the empty string. Log at logging
  *  <b>severity</b> if something ugly happens. */
 int
 string_is_key_value(int severity, const char *string)
@@ -1516,7 +1516,7 @@ void
 format_iso_time_nospace_usec(char *buf, const struct timeval *tv)
 {
   tor_assert(tv);
-  format_iso_time_nospace(buf, tv->tv_sec);
+  format_iso_time_nospace(buf, (time_t)tv->tv_sec);
   tor_snprintf(buf+ISO_TIME_LEN, 8, ".%06d", (int)tv->tv_usec);
 }
 
@@ -1830,6 +1830,7 @@ file_status(const char *fname)
   int r;
   f = tor_strdup(fname);
   clean_name_for_stat(f);
+  log_debug(LD_FS, "stat()ing %s", f);
   r = stat(sandbox_intern_string(f), &st);
   tor_free(f);
   if (r) {
@@ -1870,7 +1871,7 @@ check_private_dir(const char *dirname, cpd_check_t check,
   char *f;
 #ifndef _WIN32
   int mask;
-  struct passwd *pw = NULL;
+  const struct passwd *pw = NULL;
   uid_t running_uid;
   gid_t running_gid;
 #else
@@ -1880,6 +1881,7 @@ check_private_dir(const char *dirname, cpd_check_t check,
   tor_assert(dirname);
   f = tor_strdup(dirname);
   clean_name_for_stat(f);
+  log_debug(LD_FS, "stat()ing %s", f);
   r = stat(sandbox_intern_string(f), &st);
   tor_free(f);
   if (r) {
@@ -1916,7 +1918,7 @@ check_private_dir(const char *dirname, cpd_check_t check,
   if (effective_user) {
     /* Look up the user and group information.
      * If we have a problem, bail out. */
-    pw = getpwnam(effective_user);
+    pw = tor_getpwnam(effective_user);
     if (pw == NULL) {
       log_warn(LD_CONFIG, "Error setting configured user: %s not found",
                effective_user);
@@ -1930,13 +1932,13 @@ check_private_dir(const char *dirname, cpd_check_t check,
   }
 
   if (st.st_uid != running_uid) {
-    struct passwd *pw = NULL;
+    const struct passwd *pw = NULL;
     char *process_ownername = NULL;
 
-    pw = getpwuid(running_uid);
+    pw = tor_getpwuid(running_uid);
     process_ownername = pw ? tor_strdup(pw->pw_name) : tor_strdup("<unknown>");
 
-    pw = getpwuid(st.st_uid);
+    pw = tor_getpwuid(st.st_uid);
 
     log_warn(LD_FS, "%s is not owned by this user (%s, %d) but by "
         "%s (%d). Perhaps you are running Tor as the wrong user?",
@@ -2002,7 +2004,8 @@ write_str_to_file(const char *fname, const char *str, int bin)
 #ifdef _WIN32
   if (!bin && strchr(str, '\r')) {
     log_warn(LD_BUG,
-             "We're writing a text string that already contains a CR.");
+             "We're writing a text string that already contains a CR to %s",
+             escaped(fname));
   }
 #endif
   return write_bytes_to_file(fname, str, strlen(str), bin);
@@ -2141,6 +2144,7 @@ static int
 finish_writing_to_file_impl(open_file_t *file_data, int abort_write)
 {
   int r = 0;
+
   tor_assert(file_data && file_data->filename);
   if (file_data->stdio_file) {
     if (fclose(file_data->stdio_file)) {
@@ -2157,7 +2161,13 @@ finish_writing_to_file_impl(open_file_t *file_data, int abort_write)
   if (file_data->rename_on_close) {
     tor_assert(file_data->tempname && file_data->filename);
     if (abort_write) {
-      unlink(file_data->tempname);
+      int res = unlink(file_data->tempname);
+      if (res != 0) {
+        /* We couldn't unlink and we'll leave a mess behind */
+        log_warn(LD_FS, "Failed to unlink %s: %s",
+                 file_data->tempname, strerror(errno));
+        r = -1;
+      }
     } else {
       tor_assert(strcmp(file_data->filename, file_data->tempname));
       if (replace_file(file_data->tempname, file_data->filename)) {
@@ -3026,7 +3036,7 @@ tor_vsscanf(const char *buf, const char *pattern, va_list ap)
 /** Minimal sscanf replacement: parse <b>buf</b> according to <b>pattern</b>
  * and store the results in the corresponding argument fields.  Differs from
  * sscanf in that:
- * <ul><li>It only handles %u, %lu, %x, %lx, %<NUM>s, %d, %ld, %lf, and %c.
+ * <ul><li>It only handles %u, %lu, %x, %lx, %[NUM]s, %d, %ld, %lf, and %c.
  *     <li>It only handles decimal inputs for %lf. (12.3, not 1.23e1)
  *     <li>It does not handle arbitrarily long widths.
  *     <li>Numbers do not consume any space characters.
@@ -3450,7 +3460,7 @@ format_number_sigsafe(unsigned long x, char *buf, int buf_len,
   cp = buf + len;
   *cp = '\0';
   do {
-    unsigned digit = x % radix;
+    unsigned digit = (unsigned) (x % radix);
     tor_assert(cp > buf);
     --cp;
     *cp = "0123456789ABCDEF"[digit];
@@ -4530,6 +4540,30 @@ stream_status_to_string(enum stream_status stream_status)
   }
 }
 
+/* DOCDOC */
+static void
+log_portfw_spawn_error_message(const char *buf,
+                               const char *executable, int *child_status)
+{
+  /* Parse error message */
+  int retval, child_state, saved_errno;
+  retval = tor_sscanf(buf, SPAWN_ERROR_MESSAGE "%x/%x",
+                      &child_state, &saved_errno);
+  if (retval == 2) {
+    log_warn(LD_GENERAL,
+             "Failed to start child process \"%s\" in state %d: %s",
+             executable, child_state, strerror(saved_errno));
+    if (child_status)
+      *child_status = 1;
+  } else {
+    /* Failed to parse message from child process, log it as a
+       warning */
+    log_warn(LD_GENERAL,
+             "Unexpected message from port forwarding helper \"%s\": %s",
+             executable, buf);
+  }
+}
+
 #ifdef _WIN32
 
 /** Return a smartlist containing lines outputted from
@@ -4677,23 +4711,7 @@ log_from_pipe(FILE *stream, int severity, const char *executable,
 
     /* Check if buf starts with SPAWN_ERROR_MESSAGE */
     if (strcmpstart(buf, SPAWN_ERROR_MESSAGE) == 0) {
-      /* Parse error message */
-      int retval, child_state, saved_errno;
-      retval = tor_sscanf(buf, SPAWN_ERROR_MESSAGE "%x/%x",
-                          &child_state, &saved_errno);
-      if (retval == 2) {
-        log_warn(LD_GENERAL,
-                 "Failed to start child process \"%s\" in state %d: %s",
-                 executable, child_state, strerror(saved_errno));
-        if (child_status)
-          *child_status = 1;
-      } else {
-        /* Failed to parse message from child process, log it as a
-           warning */
-        log_warn(LD_GENERAL,
-                 "Unexpected message from port forwarding helper \"%s\": %s",
-                 executable, buf);
-      }
+      log_portfw_spawn_error_message(buf, executable, child_status);
     } else {
       log_fn(severity, LD_GENERAL, "Port forwarding helper says: %s", buf);
     }
@@ -4771,7 +4789,7 @@ get_string_from_pipe(FILE *stream, char *buf_out, size_t count)
 /** Parse a <b>line</b> from tor-fw-helper and issue an appropriate
  *  log message to our user. */
 static void
-handle_fw_helper_line(const char *line)
+handle_fw_helper_line(const char *executable, const char *line)
 {
   smartlist_t *tokens = smartlist_new();
   char *message = NULL;
@@ -4781,6 +4799,19 @@ handle_fw_helper_line(const char *line)
   const char *result = NULL;
   int port = 0;
   int success = 0;
+
+  if (strcmpstart(line, SPAWN_ERROR_MESSAGE) == 0) {
+    /* We need to check for SPAWN_ERROR_MESSAGE again here, since it's
+     * possible that it got sent after we tried to read it in log_from_pipe.
+     *
+     * XXX Ideally, we should be using one of stdout/stderr for the real
+     * output, and one for the output of the startup code.  We used to do that
+     * before cd05f35d2c.
+     */
+    int child_status;
+    log_portfw_spawn_error_message(line, executable, &child_status);
+    goto done;
+  }
 
   smartlist_split_string(tokens, line, NULL,
                          SPLIT_SKIP_SPACE|SPLIT_IGNORE_BLANK, -1);
@@ -4861,7 +4892,8 @@ handle_fw_helper_line(const char *line)
 /** Read what tor-fw-helper has to say in its stdout and handle it
  *  appropriately */
 static int
-handle_fw_helper_output(process_handle_t *process_handle)
+handle_fw_helper_output(const char *executable,
+                        process_handle_t *process_handle)
 {
   smartlist_t *fw_helper_output = NULL;
   enum stream_status stream_status = 0;
@@ -4876,7 +4908,7 @@ handle_fw_helper_output(process_handle_t *process_handle)
 
   /* Handle the lines we got: */
   SMARTLIST_FOREACH_BEGIN(fw_helper_output, char *, line) {
-    handle_fw_helper_line(line);
+    handle_fw_helper_line(executable, line);
     tor_free(line);
   } SMARTLIST_FOREACH_END(line);
 
@@ -4991,7 +5023,7 @@ tor_check_port_forwarding(const char *filename,
     stderr_status = log_from_pipe(child_handle->stderr_handle,
                                   LOG_INFO, filename, &retval);
 #endif
-    if (handle_fw_helper_output(child_handle) < 0) {
+    if (handle_fw_helper_output(filename, child_handle) < 0) {
       log_warn(LD_GENERAL, "Failed to handle fw helper output.");
       stdout_status = -1;
       retval = -1;

@@ -486,10 +486,12 @@ static HT_HEAD(clientmap, clientmap_entry_t) client_history =
 static INLINE unsigned
 clientmap_entry_hash(const clientmap_entry_t *a)
 {
-  unsigned h = tor_addr_hash(&a->addr);
+  unsigned h = (unsigned) tor_addr_hash(&a->addr);
+
   if (a->transport_name)
-    h += ht_string_hash(a->transport_name);
-  return ht_improve_hash(h);
+    h += (unsigned) siphash24g(a->transport_name, strlen(a->transport_name));
+
+  return h;
 }
 /** Hashtable helper: compare two clientmap_entry_t values for equality. */
 static INLINE int
@@ -554,8 +556,9 @@ geoip_note_client_seen(geoip_client_action_t action,
         (!(options->BridgeRelay && options->BridgeRecordUsageByCountry)))
       return;
   } else {
-    if (options->BridgeRelay || options->BridgeAuthoritativeDir ||
-        !options->DirReqStatistics)
+    /* Only gather directory-request statistics if configured, and
+     * forcibly disable them on bridge authorities. */
+    if (!options->DirReqStatistics || options->BridgeAuthoritativeDir)
       return;
   }
 
@@ -809,7 +812,7 @@ char *
 geoip_get_transport_history(void)
 {
   unsigned granularity = IP_GRANULARITY;
-  /** String hash table <name of transport> -> <number of users>. */
+  /** String hash table (name of transport) -> (number of users). */
   strmap_t *transport_counts = strmap_new();
 
   /** Smartlist that contains copies of the names of the transports

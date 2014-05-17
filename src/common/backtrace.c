@@ -5,7 +5,6 @@
 #define _GNU_SOURCE 1
 
 #include "orconfig.h"
-#include "backtrace.h"
 #include "compat.h"
 #include "util.h"
 #include "torlog.h"
@@ -31,6 +30,9 @@
 #include <ucontext.h>
 #endif
 
+#define EXPOSE_CLEAN_BACKTRACE
+#include "backtrace.h"
+
 #if defined(HAVE_EXECINFO_H) && defined(HAVE_BACKTRACE) && \
   defined(HAVE_BACKTRACE_SYMBOLS_FD) && defined(HAVE_SIGACTION)
 #define USE_BACKTRACE
@@ -49,6 +51,8 @@ static char *bt_version = NULL;
 /** Static allocation of stack to dump. This is static so we avoid stack
  * pressure. */
 static void *cb_buf[MAX_DEPTH];
+/** Protects cb_buf from concurrent access */
+static tor_mutex_t cb_buf_mutex;
 
 /** Change a stacktrace in <b>stack</b> of depth <b>depth</b> so that it will
  * log the correct function from which a signal was received with context
@@ -57,7 +61,7 @@ static void *cb_buf[MAX_DEPTH];
  * onto the stack.  Fortunately, we usually have the program counter in the
  * ucontext_t structure.
  */
-static void
+void
 clean_backtrace(void **stack, int depth, const ucontext_t *ctx)
 {
 #ifdef PC_FROM_UCONTEXT
@@ -84,18 +88,27 @@ clean_backtrace(void **stack, int depth, const ucontext_t *ctx)
 void
 log_backtrace(int severity, int domain, const char *msg)
 {
-  int depth = backtrace(cb_buf, MAX_DEPTH);
-  char **symbols = backtrace_symbols(cb_buf, depth);
+  int depth;
+  char **symbols;
   int i;
+
+  tor_mutex_acquire(&cb_buf_mutex);
+
+  depth = backtrace(cb_buf, MAX_DEPTH);
+  symbols = backtrace_symbols(cb_buf, depth);
+
   tor_log(severity, domain, "%s. Stack trace:", msg);
   if (!symbols) {
     tor_log(severity, domain, "    Unable to generate backtrace.");
-    return;
+    goto done;
   }
   for (i=0; i < depth; ++i) {
     tor_log(severity, domain, "    %s", symbols[i]);
   }
   free(symbols);
+
+ done:
+  tor_mutex_release(&cb_buf_mutex);
 }
 
 static void crash_handler(int sig, siginfo_t *si, void *ctx_)
@@ -140,6 +153,9 @@ install_bt_handler(void)
   int i, rv=0;
 
   struct sigaction sa;
+
+  tor_mutex_init(&cb_buf_mutex);
+
   memset(&sa, 0, sizeof(sa));
   sa.sa_sigaction = crash_handler;
   sa.sa_flags = SA_SIGINFO;
@@ -151,6 +167,18 @@ install_bt_handler(void)
       rv = -1;
     }
   }
+
+  {
+    /* Now, generate (but do not log) a backtrace.  This ensures that
+     * libc has pre-loaded the symbols we need to dump things, so that later
+     * reads won't be denied by the sandbox code */
+    char **symbols;
+    int depth = backtrace(cb_buf, MAX_DEPTH);
+    symbols = backtrace_symbols(cb_buf, depth);
+    if (symbols)
+      free(symbols);
+  }
+
   return rv;
 }
 
@@ -158,7 +186,7 @@ install_bt_handler(void)
 static void
 remove_bt_handler(void)
 {
-  /* We don't need to actually free anything at exit here. */
+  tor_mutex_uninit(&cb_buf_mutex);
 }
 #endif
 

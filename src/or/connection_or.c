@@ -215,7 +215,7 @@ connection_or_clear_ext_or_id_map(void)
   orconn_ext_or_id_map = NULL;
 }
 
-/** Creates an Extended ORPort identifier for <b>conn<b/> and deposits
+/** Creates an Extended ORPort identifier for <b>conn</b> and deposits
  *  it into the global list of identifiers. */
 void
 connection_or_set_ext_or_identifier(or_connection_t *conn)
@@ -691,6 +691,11 @@ connection_or_about_to_close(or_connection_t *or_conn)
   /* Tell the controlling channel we're closed */
   if (or_conn->chan) {
     channel_closed(TLS_CHAN_TO_BASE(or_conn->chan));
+    /*
+     * NULL this out because the channel might hang around a little
+     * longer before channel_run_cleanup() gets it.
+     */
+    or_conn->chan->conn = NULL;
     or_conn->chan = NULL;
   }
 
@@ -709,7 +714,8 @@ connection_or_about_to_close(or_connection_t *or_conn)
                                      reason);
         if (!authdir_mode_tests_reachability(options))
           control_event_bootstrap_problem(
-                orconn_end_reason_to_control_string(reason), reason);
+                orconn_end_reason_to_control_string(reason),
+                reason, or_conn);
       }
     }
   } else if (conn->hold_open_until_flushed) {
@@ -1072,7 +1078,7 @@ connection_or_connect_failed(or_connection_t *conn,
 {
   control_event_or_conn_status(conn, OR_CONN_EVENT_FAILED, reason);
   if (!authdir_mode_tests_reachability(get_options()))
-    control_event_bootstrap_problem(msg, reason);
+    control_event_bootstrap_problem(msg, reason, conn);
 }
 
 /** <b>conn</b> got an error in connection_handle_read_impl() or
@@ -1189,6 +1195,12 @@ connection_or_connect(const tor_addr_t *_addr, uint16_t port,
                "your pluggable transport proxy stopped running.",
                fmt_addrport(&TO_CONN(conn)->addr, TO_CONN(conn)->port),
                transport_name, transport_name);
+
+      control_event_bootstrap_problem(
+                                "Can't connect to bridge",
+                                END_OR_CONN_REASON_PT_MISSING,
+                                conn);
+
     } else {
       log_warn(LD_GENERAL, "Tried to connect to '%s' through a proxy, but "
                "the proxy address could not be found.",
@@ -1703,7 +1715,8 @@ connection_or_client_learned_peer_id(or_connection_t *conn,
     if (!authdir_mode_tests_reachability(options))
       control_event_bootstrap_problem(
                                 "Unexpected identity in router certificate",
-                                END_OR_CONN_REASON_OR_IDENTITY);
+                                END_OR_CONN_REASON_OR_IDENTITY,
+                                conn);
     return -1;
   }
   if (authdir_mode_tests_reachability(options)) {
@@ -1752,8 +1765,6 @@ connection_tls_finish_handshake(or_connection_t *conn)
             conn,
             safe_str_client(conn->base_.address),
             tor_tls_get_ciphersuite_name(conn->tls));
-
-  directory_set_dirty();
 
   if (connection_or_check_valid_tls_handshake(conn, started_here,
                                               digest_rcvd) < 0)

@@ -178,7 +178,6 @@ connection_get_outbuf_len(connection_t *conn)
 connection_t *connection_get_by_global_id(uint64_t id);
 
 connection_t *connection_get_by_type(int type);
-connection_t *connection_get_by_type_purpose(int type, int purpose);
 connection_t *connection_get_by_type_addr_port_purpose(int type,
                                                    const tor_addr_t *addr,
                                                    uint16_t port, int purpose);
@@ -187,6 +186,8 @@ connection_t *connection_get_by_type_state_rendquery(int type, int state,
                                                      const char *rendquery);
 dir_connection_t *connection_dir_get_by_purpose_and_resource(
                                            int state, const char *resource);
+
+int any_other_active_or_conns(const or_connection_t *this_conn);
 
 #define connection_speaks_cells(conn) ((conn)->type == CONN_TYPE_OR)
 int connection_is_listener(connection_t *conn);

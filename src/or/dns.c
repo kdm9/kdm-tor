@@ -239,7 +239,7 @@ cached_resolves_eq(cached_resolve_t *a, cached_resolve_t *b)
 static INLINE unsigned int
 cached_resolve_hash(cached_resolve_t *a)
 {
-  return ht_string_hash(a->address);
+  return (unsigned) siphash24g((const uint8_t*)a->address, strlen(a->address));
 }
 
 HT_PROTOTYPE(cache_map, cached_resolve_t, node, cached_resolve_hash,
@@ -1353,6 +1353,7 @@ inform_pending_connections(cached_resolve_t *resolve)
     }
     resolve->pending_connections = pend->next;
     tor_free(pend);
+    tor_free(hostname);
   }
 }
 
@@ -1479,6 +1480,7 @@ configure_nameservers(int force)
 
   evdns_set_log_fn(evdns_log_cb);
   if (conf_fname) {
+    log_debug(LD_FS, "stat()ing %s", conf_fname);
     if (stat(sandbox_intern_string(conf_fname), &st)) {
       log_warn(LD_EXIT, "Unable to stat resolver configuration in '%s': %s",
                conf_fname, strerror(errno));
@@ -1496,6 +1498,7 @@ configure_nameservers(int force)
 #if defined(DNS_OPTION_HOSTSFILE) && defined(USE_LIBSECCOMP)
     if (flags & DNS_OPTION_HOSTSFILE) {
       flags ^= DNS_OPTION_HOSTSFILE;
+      log_debug(LD_FS, "Loading /etc/hosts");
       evdns_base_load_hosts(the_evdns_base,
           sandbox_intern_string("/etc/hosts"));
     }
@@ -2171,7 +2174,7 @@ static void
 assert_cache_ok_(void)
 {
   cached_resolve_t **resolve;
-  int bad_rep = _cache_map_HT_REP_IS_BAD(&cache_root);
+  int bad_rep = HT_REP_IS_BAD_(cache_map, &cache_root);
   if (bad_rep) {
     log_err(LD_BUG, "Bad rep type %d on dns cache hash table", bad_rep);
     tor_assert(!bad_rep);

@@ -32,6 +32,7 @@ const char tor_git_revision[] = "";
 #define ROUTER_PRIVATE
 #define CIRCUITSTATS_PRIVATE
 #define CIRCUITLIST_PRIVATE
+#define STATEFILE_PRIVATE
 
 /*
  * Linux doesn't provide lround in math.h by default, but mac os does...
@@ -59,6 +60,7 @@ double fabs(double x);
 #include "policies.h"
 #include "rephist.h"
 #include "routerparse.h"
+#include "statefile.h"
 #ifdef CURVE25519_ENABLED
 #include "crypto_curve25519.h"
 #include "onion_ntor.h"
@@ -416,9 +418,10 @@ test_onion_queues(void)
   or_circuit_t *circ1 = or_circuit_new(0, NULL);
   or_circuit_t *circ2 = or_circuit_new(0, NULL);
 
-  create_cell_t *onionskin = NULL;
+  create_cell_t *onionskin = NULL, *create2_ptr;
   create_cell_t *create1 = tor_malloc_zero(sizeof(create_cell_t));
   create_cell_t *create2 = tor_malloc_zero(sizeof(create_cell_t));
+  create2_ptr = create2; /* remember, but do not free */
 
   create_cell_init(create1, CELL_CREATE, ONION_HANDSHAKE_TYPE_TAP,
                    TAP_ONIONSKIN_CHALLENGE_LEN, buf1);
@@ -438,6 +441,7 @@ test_onion_queues(void)
   test_eq_ptr(circ2, onion_next_task(&onionskin));
   test_eq(1, onion_num_pending(ONION_HANDSHAKE_TYPE_TAP));
   test_eq(0, onion_num_pending(ONION_HANDSHAKE_TYPE_NTOR));
+  tt_ptr_op(onionskin, ==, create2_ptr);
 
   clear_pending_onions();
   test_eq(0, onion_num_pending(ONION_HANDSHAKE_TYPE_TAP));
@@ -448,6 +452,7 @@ test_onion_queues(void)
   circuit_free(TO_CIRCUIT(circ2));
   tor_free(create1);
   tor_free(create2);
+  tor_free(onionskin);
 }
 
 static void
@@ -466,14 +471,14 @@ test_circuit_timeout(void)
   circuit_build_times_t estimate;
   circuit_build_times_t final;
   double timeout1, timeout2;
-  or_state_t state;
+  or_state_t *state=NULL;
   int i, runs;
   double close_ms;
   circuit_build_times_init(&initial);
   circuit_build_times_init(&estimate);
   circuit_build_times_init(&final);
 
-  memset(&state, 0, sizeof(or_state_t));
+  state = or_state_new();
 
   circuitbuild_running_unit_tests();
 #define timeout0 (build_time_t)(30*1000.0)
@@ -505,8 +510,9 @@ test_circuit_timeout(void)
 
   test_assert(estimate.total_build_times <= CBT_NCIRCUITS_TO_OBSERVE);
 
-  circuit_build_times_update_state(&estimate, &state);
-  test_assert(circuit_build_times_parse_state(&final, &state) == 0);
+  circuit_build_times_update_state(&estimate, state);
+  circuit_build_times_free_timeouts(&final);
+  test_assert(circuit_build_times_parse_state(&final, state) == 0);
 
   circuit_build_times_update_alpha(&final);
   timeout2 = circuit_build_times_calculate_timeout(&final,
@@ -595,336 +601,10 @@ test_circuit_timeout(void)
   }
 
  done:
-  return;
-}
-
-/* Helper: assert that short_policy parses and writes back out as itself,
-   or as <b>expected</b> if that's provided. */
-static void
-test_short_policy_parse(const char *input,
-                        const char *expected)
-{
-  short_policy_t *short_policy = NULL;
-  char *out = NULL;
-
-  if (expected == NULL)
-    expected = input;
-
-  short_policy = parse_short_policy(input);
-  tt_assert(short_policy);
-  out = write_short_policy(short_policy);
-  tt_str_op(out, ==, expected);
-
- done:
-  tor_free(out);
-  short_policy_free(short_policy);
-}
-
-/** Helper: Parse the exit policy string in <b>policy_str</b>, and make sure
- * that policies_summarize() produces the string <b>expected_summary</b> from
- * it. */
-static void
-test_policy_summary_helper(const char *policy_str,
-                           const char *expected_summary)
-{
-  config_line_t line;
-  smartlist_t *policy = smartlist_new();
-  char *summary = NULL;
-  char *summary_after = NULL;
-  int r;
-  short_policy_t *short_policy = NULL;
-
-  line.key = (char*)"foo";
-  line.value = (char *)policy_str;
-  line.next = NULL;
-
-  r = policies_parse_exit_policy(&line, &policy, 1, 0, NULL, 1);
-  test_eq(r, 0);
-  summary = policy_summarize(policy, AF_INET);
-
-  test_assert(summary != NULL);
-  test_streq(summary, expected_summary);
-
-  short_policy = parse_short_policy(summary);
-  tt_assert(short_policy);
-  summary_after = write_short_policy(short_policy);
-  test_streq(summary, summary_after);
-
- done:
-  tor_free(summary_after);
-  tor_free(summary);
-  if (policy)
-    addr_policy_list_free(policy);
-  short_policy_free(short_policy);
-}
-
-/** Run unit tests for generating summary lines of exit policies */
-static void
-test_policies(void)
-{
-  int i;
-  smartlist_t *policy = NULL, *policy2 = NULL, *policy3 = NULL,
-              *policy4 = NULL, *policy5 = NULL, *policy6 = NULL,
-              *policy7 = NULL;
-  addr_policy_t *p;
-  tor_addr_t tar;
-  config_line_t line;
-  smartlist_t *sm = NULL;
-  char *policy_str = NULL;
-
-  policy = smartlist_new();
-
-  p = router_parse_addr_policy_item_from_string("reject 192.168.0.0/16:*",-1);
-  test_assert(p != NULL);
-  test_eq(ADDR_POLICY_REJECT, p->policy_type);
-  tor_addr_from_ipv4h(&tar, 0xc0a80000u);
-  test_eq(0, tor_addr_compare(&p->addr, &tar, CMP_EXACT));
-  test_eq(16, p->maskbits);
-  test_eq(1, p->prt_min);
-  test_eq(65535, p->prt_max);
-
-  smartlist_add(policy, p);
-
-  tor_addr_from_ipv4h(&tar, 0x01020304u);
-  test_assert(ADDR_POLICY_ACCEPTED ==
-          compare_tor_addr_to_addr_policy(&tar, 2, policy));
-  tor_addr_make_unspec(&tar);
-  test_assert(ADDR_POLICY_PROBABLY_ACCEPTED ==
-          compare_tor_addr_to_addr_policy(&tar, 2, policy));
-  tor_addr_from_ipv4h(&tar, 0xc0a80102);
-  test_assert(ADDR_POLICY_REJECTED ==
-          compare_tor_addr_to_addr_policy(&tar, 2, policy));
-
-  test_assert(0 == policies_parse_exit_policy(NULL, &policy2, 1, 1, NULL, 1));
-  test_assert(policy2);
-
-  policy3 = smartlist_new();
-  p = router_parse_addr_policy_item_from_string("reject *:*",-1);
-  test_assert(p != NULL);
-  smartlist_add(policy3, p);
-  p = router_parse_addr_policy_item_from_string("accept *:*",-1);
-  test_assert(p != NULL);
-  smartlist_add(policy3, p);
-
-  policy4 = smartlist_new();
-  p = router_parse_addr_policy_item_from_string("accept *:443",-1);
-  test_assert(p != NULL);
-  smartlist_add(policy4, p);
-  p = router_parse_addr_policy_item_from_string("accept *:443",-1);
-  test_assert(p != NULL);
-  smartlist_add(policy4, p);
-
-  policy5 = smartlist_new();
-  p = router_parse_addr_policy_item_from_string("reject 0.0.0.0/8:*",-1);
-  test_assert(p != NULL);
-  smartlist_add(policy5, p);
-  p = router_parse_addr_policy_item_from_string("reject 169.254.0.0/16:*",-1);
-  test_assert(p != NULL);
-  smartlist_add(policy5, p);
-  p = router_parse_addr_policy_item_from_string("reject 127.0.0.0/8:*",-1);
-  test_assert(p != NULL);
-  smartlist_add(policy5, p);
-  p = router_parse_addr_policy_item_from_string("reject 192.168.0.0/16:*",-1);
-  test_assert(p != NULL);
-  smartlist_add(policy5, p);
-  p = router_parse_addr_policy_item_from_string("reject 10.0.0.0/8:*",-1);
-  test_assert(p != NULL);
-  smartlist_add(policy5, p);
-  p = router_parse_addr_policy_item_from_string("reject 172.16.0.0/12:*",-1);
-  test_assert(p != NULL);
-  smartlist_add(policy5, p);
-  p = router_parse_addr_policy_item_from_string("reject 80.190.250.90:*",-1);
-  test_assert(p != NULL);
-  smartlist_add(policy5, p);
-  p = router_parse_addr_policy_item_from_string("reject *:1-65534",-1);
-  test_assert(p != NULL);
-  smartlist_add(policy5, p);
-  p = router_parse_addr_policy_item_from_string("reject *:65535",-1);
-  test_assert(p != NULL);
-  smartlist_add(policy5, p);
-  p = router_parse_addr_policy_item_from_string("accept *:1-65535",-1);
-  test_assert(p != NULL);
-  smartlist_add(policy5, p);
-
-  policy6 = smartlist_new();
-  p = router_parse_addr_policy_item_from_string("accept 43.3.0.0/9:*",-1);
-  test_assert(p != NULL);
-  smartlist_add(policy6, p);
-
-  policy7 = smartlist_new();
-  p = router_parse_addr_policy_item_from_string("accept 0.0.0.0/8:*",-1);
-  test_assert(p != NULL);
-  smartlist_add(policy7, p);
-
-  test_assert(!exit_policy_is_general_exit(policy));
-  test_assert(exit_policy_is_general_exit(policy2));
-  test_assert(!exit_policy_is_general_exit(NULL));
-  test_assert(!exit_policy_is_general_exit(policy3));
-  test_assert(!exit_policy_is_general_exit(policy4));
-  test_assert(!exit_policy_is_general_exit(policy5));
-  test_assert(!exit_policy_is_general_exit(policy6));
-  test_assert(!exit_policy_is_general_exit(policy7));
-
-  test_assert(cmp_addr_policies(policy, policy2));
-  test_assert(cmp_addr_policies(policy, NULL));
-  test_assert(!cmp_addr_policies(policy2, policy2));
-  test_assert(!cmp_addr_policies(NULL, NULL));
-
-  test_assert(!policy_is_reject_star(policy2, AF_INET));
-  test_assert(policy_is_reject_star(policy, AF_INET));
-  test_assert(policy_is_reject_star(NULL, AF_INET));
-
-  addr_policy_list_free(policy);
-  policy = NULL;
-
-  /* make sure compacting logic works. */
-  policy = NULL;
-  line.key = (char*)"foo";
-  line.value = (char*)"accept *:80,reject private:*,reject *:*";
-  line.next = NULL;
-  test_assert(0 == policies_parse_exit_policy(&line, &policy, 1, 0, NULL, 1));
-  test_assert(policy);
-  //test_streq(policy->string, "accept *:80");
-  //test_streq(policy->next->string, "reject *:*");
-  test_eq(smartlist_len(policy), 4);
-
-  /* test policy summaries */
-  /* check if we properly ignore private IP addresses */
-  test_policy_summary_helper("reject 192.168.0.0/16:*,"
-                             "reject 0.0.0.0/8:*,"
-                             "reject 10.0.0.0/8:*,"
-                             "accept *:10-30,"
-                             "accept *:90,"
-                             "reject *:*",
-                             "accept 10-30,90");
-  /* check all accept policies, and proper counting of rejects */
-  test_policy_summary_helper("reject 11.0.0.0/9:80,"
-                             "reject 12.0.0.0/9:80,"
-                             "reject 13.0.0.0/9:80,"
-                             "reject 14.0.0.0/9:80,"
-                             "accept *:*", "accept 1-65535");
-  test_policy_summary_helper("reject 11.0.0.0/9:80,"
-                             "reject 12.0.0.0/9:80,"
-                             "reject 13.0.0.0/9:80,"
-                             "reject 14.0.0.0/9:80,"
-                             "reject 15.0.0.0:81,"
-                             "accept *:*", "accept 1-65535");
-  test_policy_summary_helper("reject 11.0.0.0/9:80,"
-                             "reject 12.0.0.0/9:80,"
-                             "reject 13.0.0.0/9:80,"
-                             "reject 14.0.0.0/9:80,"
-                             "reject 15.0.0.0:80,"
-                             "accept *:*",
-                             "reject 80");
-  /* no exits */
-  test_policy_summary_helper("accept 11.0.0.0/9:80,"
-                             "reject *:*",
-                             "reject 1-65535");
-  /* port merging */
-  test_policy_summary_helper("accept *:80,"
-                             "accept *:81,"
-                             "accept *:100-110,"
-                             "accept *:111,"
-                             "reject *:*",
-                             "accept 80-81,100-111");
-  /* border ports */
-  test_policy_summary_helper("accept *:1,"
-                             "accept *:3,"
-                             "accept *:65535,"
-                             "reject *:*",
-                             "accept 1,3,65535");
-  /* holes */
-  test_policy_summary_helper("accept *:1,"
-                             "accept *:3,"
-                             "accept *:5,"
-                             "accept *:7,"
-                             "reject *:*",
-                             "accept 1,3,5,7");
-  test_policy_summary_helper("reject *:1,"
-                             "reject *:3,"
-                             "reject *:5,"
-                             "reject *:7,"
-                             "accept *:*",
-                             "reject 1,3,5,7");
-
-  /* Short policies with unrecognized formats should get accepted. */
-  test_short_policy_parse("accept fred,2,3-5", "accept 2,3-5");
-  test_short_policy_parse("accept 2,fred,3", "accept 2,3");
-  test_short_policy_parse("accept 2,fred,3,bob", "accept 2,3");
-  test_short_policy_parse("accept 2,-3,500-600", "accept 2,500-600");
-  /* Short policies with nil entries are accepted too. */
-  test_short_policy_parse("accept 1,,3", "accept 1,3");
-  test_short_policy_parse("accept 100-200,,", "accept 100-200");
-  test_short_policy_parse("reject ,1-10,,,,30-40", "reject 1-10,30-40");
-
-  /* Try parsing various broken short policies */
-  tt_ptr_op(NULL, ==, parse_short_policy("accept 200-199"));
-  tt_ptr_op(NULL, ==, parse_short_policy(""));
-  tt_ptr_op(NULL, ==, parse_short_policy("rejekt 1,2,3"));
-  tt_ptr_op(NULL, ==, parse_short_policy("reject "));
-  tt_ptr_op(NULL, ==, parse_short_policy("reject"));
-  tt_ptr_op(NULL, ==, parse_short_policy("rej"));
-  tt_ptr_op(NULL, ==, parse_short_policy("accept 2,3,100000"));
-  tt_ptr_op(NULL, ==, parse_short_policy("accept 2,3x,4"));
-  tt_ptr_op(NULL, ==, parse_short_policy("accept 2,3x,4"));
-  tt_ptr_op(NULL, ==, parse_short_policy("accept 2-"));
-  tt_ptr_op(NULL, ==, parse_short_policy("accept 2-x"));
-  tt_ptr_op(NULL, ==, parse_short_policy("accept 1-,3"));
-  tt_ptr_op(NULL, ==, parse_short_policy("accept 1-,3"));
-  /* Test a too-long policy. */
-  {
-    int i;
-    char *policy = NULL;
-    smartlist_t *chunks = smartlist_new();
-    smartlist_add(chunks, tor_strdup("accept "));
-    for (i=1; i<10000; ++i)
-      smartlist_add_asprintf(chunks, "%d,", i);
-    smartlist_add(chunks, tor_strdup("20000"));
-    policy = smartlist_join_strings(chunks, "", 0, NULL);
-    SMARTLIST_FOREACH(chunks, char *, ch, tor_free(ch));
-    smartlist_free(chunks);
-    tt_ptr_op(NULL, ==, parse_short_policy(policy));/* shouldn't be accepted */
-    tor_free(policy); /* could leak. */
-  }
-
-  /* truncation ports */
-  sm = smartlist_new();
-  for (i=1; i<2000; i+=2) {
-    char buf[POLICY_BUF_LEN];
-    tor_snprintf(buf, sizeof(buf), "reject *:%d", i);
-    smartlist_add(sm, tor_strdup(buf));
-  }
-  smartlist_add(sm, tor_strdup("accept *:*"));
-  policy_str = smartlist_join_strings(sm, ",", 0, NULL);
-  test_policy_summary_helper( policy_str,
-    "accept 2,4,6,8,10,12,14,16,18,20,22,24,26,28,30,32,34,36,38,40,42,44,"
-    "46,48,50,52,54,56,58,60,62,64,66,68,70,72,74,76,78,80,82,84,86,88,90,"
-    "92,94,96,98,100,102,104,106,108,110,112,114,116,118,120,122,124,126,128,"
-    "130,132,134,136,138,140,142,144,146,148,150,152,154,156,158,160,162,164,"
-    "166,168,170,172,174,176,178,180,182,184,186,188,190,192,194,196,198,200,"
-    "202,204,206,208,210,212,214,216,218,220,222,224,226,228,230,232,234,236,"
-    "238,240,242,244,246,248,250,252,254,256,258,260,262,264,266,268,270,272,"
-    "274,276,278,280,282,284,286,288,290,292,294,296,298,300,302,304,306,308,"
-    "310,312,314,316,318,320,322,324,326,328,330,332,334,336,338,340,342,344,"
-    "346,348,350,352,354,356,358,360,362,364,366,368,370,372,374,376,378,380,"
-    "382,384,386,388,390,392,394,396,398,400,402,404,406,408,410,412,414,416,"
-    "418,420,422,424,426,428,430,432,434,436,438,440,442,444,446,448,450,452,"
-    "454,456,458,460,462,464,466,468,470,472,474,476,478,480,482,484,486,488,"
-    "490,492,494,496,498,500,502,504,506,508,510,512,514,516,518,520,522");
-
- done:
-  addr_policy_list_free(policy);
-  addr_policy_list_free(policy2);
-  addr_policy_list_free(policy3);
-  addr_policy_list_free(policy4);
-  addr_policy_list_free(policy5);
-  addr_policy_list_free(policy6);
-  addr_policy_list_free(policy7);
-  tor_free(policy_str);
-  if (sm) {
-    SMARTLIST_FOREACH(sm, char *, s, tor_free(s));
-    smartlist_free(sm);
-  }
+  circuit_build_times_free_timeouts(&initial);
+  circuit_build_times_free_timeouts(&estimate);
+  circuit_build_times_free_timeouts(&final);
+  or_state_free(state);
 }
 
 /** Test encoding and parsing of rendezvous service descriptors. */
@@ -1275,6 +955,7 @@ test_geoip(void)
   geoip_start_dirreq((uint64_t) 1, 1024, DIRREQ_TUNNELED);
   s = geoip_format_dirreq_stats(now + 86400);
   test_streq(dirreq_stats_4, s);
+  tor_free(s);
 
   /* Stop collecting directory request statistics and start gathering
    * entry stats. */
@@ -1336,6 +1017,8 @@ test_geoip_with_pt(void)
 
   get_options_mutable()->BridgeRelay = 1;
   get_options_mutable()->BridgeRecordUsageByCountry = 1;
+
+  memset(&in6, 0, sizeof(in6));
 
   /* No clients seen yet. */
   s = geoip_get_transport_history();
@@ -1595,7 +1278,6 @@ static struct testcase_t test_array[] = {
   { "ntor_handshake", test_ntor_handshake, 0, NULL, NULL },
 #endif
   ENT(circuit_timeout),
-  ENT(policies),
   ENT(rend_fns),
   ENT(geoip),
   FORK(geoip_with_pt),
@@ -1615,6 +1297,7 @@ extern struct testcase_t pt_tests[];
 extern struct testcase_t config_tests[];
 extern struct testcase_t introduce_tests[];
 extern struct testcase_t replaycache_tests[];
+extern struct testcase_t relaycell_tests[];
 extern struct testcase_t cell_format_tests[];
 extern struct testcase_t circuitlist_tests[];
 extern struct testcase_t circuitmux_tests[];
@@ -1624,7 +1307,12 @@ extern struct testcase_t socks_tests[];
 extern struct testcase_t extorport_tests[];
 extern struct testcase_t controller_event_tests[];
 extern struct testcase_t logging_tests[];
-extern struct testcase_t backtrace_tests[];
+extern struct testcase_t hs_tests[];
+extern struct testcase_t nodelist_tests[];
+extern struct testcase_t routerkeys_tests[];
+extern struct testcase_t oom_tests[];
+extern struct testcase_t policy_tests[];
+extern struct testcase_t status_tests[];
 
 static struct testgroup_t testgroups[] = {
   { "", test_array },
@@ -1642,12 +1330,19 @@ static struct testgroup_t testgroups[] = {
   { "pt/", pt_tests },
   { "config/", config_tests },
   { "replaycache/", replaycache_tests },
+  { "relaycell/", relaycell_tests },
   { "introduce/", introduce_tests },
   { "circuitlist/", circuitlist_tests },
   { "circuitmux/", circuitmux_tests },
   { "options/", options_tests },
   { "extorport/", extorport_tests },
   { "control/", controller_event_tests },
+  { "hs/", hs_tests },
+  { "nodelist/", nodelist_tests },
+  { "routerkeys/", routerkeys_tests },
+  { "oom/", oom_tests },
+  { "policy/" , policy_tests },
+  { "status/" , status_tests },
   END_OF_GROUPS
 };
 
@@ -1660,6 +1355,7 @@ main(int c, const char **v)
   char *errmsg = NULL;
   int i, i_out;
   int loglevel = LOG_ERR;
+  int accel_crypto = 0;
 
 #ifdef USE_DMALLOC
   {
@@ -1682,6 +1378,8 @@ main(int c, const char **v)
       loglevel = LOG_INFO;
     } else if (!strcmp(v[i], "--debug")) {
       loglevel = LOG_DEBUG;
+    } else if (!strcmp(v[i], "--accel")) {
+      accel_crypto = 1;
     } else {
       v[i_out++] = v[i];
     }
@@ -1696,7 +1394,7 @@ main(int c, const char **v)
   }
 
   options->command = CMD_RUN_UNITTESTS;
-  if (crypto_global_init(0, NULL, NULL)) {
+  if (crypto_global_init(accel_crypto, NULL, NULL)) {
     printf("Can't initialize crypto subsystem; exiting.\n");
     return 1;
   }

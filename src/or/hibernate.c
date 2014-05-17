@@ -239,8 +239,8 @@ accounting_parse_options(const or_options_t *options, int validate_only)
 /** If we want to manage the accounting system and potentially
  * hibernate, return 1, else return 0.
  */
-int
-accounting_is_enabled(const or_options_t *options)
+MOCK_IMPL(int,
+accounting_is_enabled,(const or_options_t *options))
 {
   if (options->AccountingMax)
     return 1;
@@ -256,8 +256,8 @@ accounting_get_interval_length(void)
 }
 
 /** Return the time at which the current accounting interval will end. */
-time_t
-accounting_get_end_time(void)
+MOCK_IMPL(time_t,
+accounting_get_end_time,(void))
 {
   return interval_end_time;
 }
@@ -648,7 +648,15 @@ read_bandwidth_usage(void)
 
   {
     char *fname = get_datadir_fname("bw_accounting");
-    unlink(fname);
+    int res;
+
+    res = unlink(fname);
+    if (res != 0) {
+      log_warn(LD_FS,
+               "Failed to unlink %s: %s",
+               fname, strerror(errno));
+    }
+
     tor_free(fname);
   }
 
@@ -815,8 +823,8 @@ hibernate_begin_shutdown(void)
 }
 
 /** Return true iff we are currently hibernating. */
-int
-we_are_hibernating(void)
+MOCK_IMPL(int,
+we_are_hibernating,(void))
 {
   return hibernate_state != HIBERNATE_STATE_LIVE;
 }

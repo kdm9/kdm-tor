@@ -43,6 +43,7 @@ int router_reload_router_list(void);
 int authority_cert_dl_looks_uncertain(const char *id_digest);
 const smartlist_t *router_get_trusted_dir_servers(void);
 const smartlist_t *router_get_fallback_dir_servers(void);
+int authority_cert_is_blacklisted(const authority_cert_t *cert);
 
 const routerstatus_t *router_pick_directory_server(dirinfo_type_t type,
                                                    int flags);
@@ -54,8 +55,7 @@ const routerstatus_t *router_pick_trusteddirserver(dirinfo_type_t type,
                                                    int flags);
 const routerstatus_t *router_pick_fallback_dirserver(dirinfo_type_t type,
                                                      int flags);
-int router_get_my_share_of_directory_requests(double *v2_share_out,
-                                              double *v3_share_out);
+int router_get_my_share_of_directory_requests(double *v3_share_out);
 void router_reset_status_download_failures(void);
 int routers_have_same_or_addrs(const routerinfo_t *r1, const routerinfo_t *r2);
 const routerinfo_t *routerlist_find_my_routerinfo(void);

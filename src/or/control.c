@@ -940,6 +940,7 @@ static const struct control_event_t control_event_table[] = {
   { EVENT_TB_EMPTY, "TB_EMPTY" },
   { EVENT_CIRC_BANDWIDTH_USED, "CIRC_BW" },
   { EVENT_TRANSPORT_LAUNCHED, "TRANSPORT_LAUNCHED" },
+  { EVENT_HS_DESC, "HS_DESC" },
   { 0, NULL },
 };
 
@@ -1491,7 +1492,7 @@ getinfo_helper_misc(control_connection_t *conn, const char *question,
       *answer = tor_strdup("");
     #else
       int myUid = geteuid();
-      struct passwd *myPwEntry = getpwuid(myUid);
+      const struct passwd *myPwEntry = tor_getpwuid(myUid);
 
       if (myPwEntry) {
         *answer = tor_strdup(myPwEntry->pw_name);
@@ -1503,6 +1504,9 @@ getinfo_helper_misc(control_connection_t *conn, const char *question,
     int max_fds=-1;
     set_max_file_descriptors(0, &max_fds);
     tor_asprintf(answer, "%d", max_fds);
+  } else if (!strcmp(question, "limits/max-mem-in-queues")) {
+    tor_asprintf(answer, U64_FORMAT,
+                 U64_PRINTF_ARG(get_options()->MaxMemInQueues));
   } else if (!strcmp(question, "dir-usage")) {
     *answer = directory_dump_request_log();
   } else if (!strcmp(question, "fingerprint")) {
@@ -1549,7 +1553,7 @@ munge_extrainfo_into_routerinfo(const char *ri_body,
   outp += router_sig-ri_body;
 
   for (i=0; i < 2; ++i) {
-    const char *kwd = i?"\nwrite-history ":"\nread-history ";
+    const char *kwd = i ? "\nwrite-history " : "\nread-history ";
     const char *cp, *eol;
     if (!(cp = tor_memstr(ei_body, ei_len, kwd)))
       continue;
@@ -1747,39 +1751,7 @@ getinfo_helper_dir(control_connection_t *control_conn,
     tor_free(url);
     smartlist_free(descs);
   } else if (!strcmpstart(question, "dir/status/")) {
-    if (directory_permits_controller_requests(get_options())) {
-      size_t len=0;
-      char *cp;
-      smartlist_t *status_list = smartlist_new();
-      dirserv_get_networkstatus_v2(status_list,
-                                   question+strlen("dir/status/"));
-      SMARTLIST_FOREACH(status_list, cached_dir_t *, d, len += d->dir_len);
-      cp = *answer = tor_malloc(len+1);
-      SMARTLIST_FOREACH(status_list, cached_dir_t *, d, {
-          memcpy(cp, d->dir, d->dir_len);
-          cp += d->dir_len;
-        });
-      *cp = '\0';
-      smartlist_free(status_list);
-    } else {
-      smartlist_t *fp_list = smartlist_new();
-      smartlist_t *status_list = smartlist_new();
-      dirserv_get_networkstatus_v2_fingerprints(
-                             fp_list, question+strlen("dir/status/"));
-      SMARTLIST_FOREACH(fp_list, const char *, fp, {
-          char *s;
-          char *fname = networkstatus_get_cache_filename(fp);
-          s = read_file_to_str(fname, 0, NULL);
-          if (s)
-            smartlist_add(status_list, s);
-          tor_free(fname);
-        });
-      SMARTLIST_FOREACH(fp_list, char *, fp, tor_free(fp));
-      smartlist_free(fp_list);
-      *answer = smartlist_join_strings(status_list, "", 0, NULL);
-      SMARTLIST_FOREACH(status_list, char *, s, tor_free(s));
-      smartlist_free(status_list);
-    }
+    *answer = tor_strdup("");
   } else if (!strcmp(question, "dir/status-vote/current/consensus")) { /* v3 */
     if (directory_caches_dir_info(get_options())) {
       const cached_dir_t *consensus = dirserv_get_consensus("ns");
@@ -2215,6 +2187,7 @@ static const getinfo_item_t getinfo_items[] = {
   ITEM("process/user", misc,
        "Username under which the tor process is running."),
   ITEM("process/descriptor-limit", misc, "File descriptor limit."),
+  ITEM("limits/max-mem-in-queues", misc, "Actual limit on memory in queues"),
   ITEM("dir-usage", misc, "Breakdown of bytes transferred over DirPort."),
   PREFIX("desc-annotations/id/", dir, "Router annotations by hexdigest."),
   PREFIX("dir/server/", dir,"Router descriptors as retrieved from a DirPort."),
@@ -2224,6 +2197,9 @@ static const getinfo_item_t getinfo_items[] = {
        "v3 Networkstatus consensus as retrieved from a DirPort."),
   ITEM("exit-policy/default", policies,
        "The default value appended to the configured exit policy."),
+  ITEM("exit-policy/full", policies, "The entire exit policy of onion router"),
+  ITEM("exit-policy/ipv4", policies, "IPv4 parts of exit policy"),
+  ITEM("exit-policy/ipv6", policies, "IPv6 parts of exit policy"),
   PREFIX("ip-to-country/", geoip, "Perform a GEOIP lookup"),
   { NULL, NULL, NULL, 0 }
 };
@@ -3207,27 +3183,22 @@ connection_control_reached_eof(control_connection_t *conn)
   return 0;
 }
 
+static void lost_owning_controller(const char *owner_type,
+                                   const char *loss_manner)
+  ATTR_NORETURN;
+
 /** Shut down this Tor instance in the same way that SIGINT would, but
  * with a log message appropriate for the loss of an owning controller. */
 static void
 lost_owning_controller(const char *owner_type, const char *loss_manner)
 {
-  int shutdown_slowly = server_mode(get_options());
-
-  log_notice(LD_CONTROL, "Owning controller %s has %s -- %s.",
-             owner_type, loss_manner,
-             shutdown_slowly ? "shutting down" : "exiting now");
+  log_notice(LD_CONTROL, "Owning controller %s has %s -- exiting now.",
+             owner_type, loss_manner);
 
   /* XXXX Perhaps this chunk of code should be a separate function,
    * called here and by process_signal(SIGINT). */
-
-  if (!shutdown_slowly) {
-    tor_cleanup();
-    exit(0);
-  }
-  /* XXXX This will close all listening sockets except control-port
-   * listeners.  Perhaps we should close those too. */
-  hibernate_begin_shutdown();
+  tor_cleanup();
+  exit(0);
 }
 
 /** Called when <b>conn</b> is being freed. */
@@ -4710,6 +4681,8 @@ static char *owning_controller_process_spec = NULL;
  * if this Tor instance is not currently owned by a process. */
 static tor_process_monitor_t *owning_controller_process_monitor = NULL;
 
+static void owning_controller_procmon_cb(void *unused) ATTR_NORETURN;
+
 /** Process-termination monitor callback for Tor's owning controller
  * process. */
 static void
@@ -4853,15 +4826,27 @@ bootstrap_status_to_string(bootstrap_status_t s, const char **tag,
  * Tor initializes. */
 static int bootstrap_percent = BOOTSTRAP_STATUS_UNDEF;
 
+/** As bootstrap_percent, but holds the bootstrapping level at which we last
+ * logged a NOTICE-level message. We use this, plus BOOTSTRAP_PCT_INCREMENT,
+ * to avoid flooding the log with a new message every time we get a few more
+ * microdescriptors */
+static int notice_bootstrap_percent = 0;
+
 /** How many problems have we had getting to the next bootstrapping phase?
  * These include failure to establish a connection to a Tor relay,
  * failures to finish the TLS handshake, failures to validate the
  * consensus document, etc. */
 static int bootstrap_problems = 0;
 
-/* We only tell the controller once we've hit a threshold of problems
+/** We only tell the controller once we've hit a threshold of problems
  * for the current phase. */
 #define BOOTSTRAP_PROBLEM_THRESHOLD 10
+
+/** When our bootstrapping progress level changes, but our bootstrapping
+ * status has not advanced, we only log at NOTICE when we have made at least
+ * this much progress.
+ */
+#define BOOTSTRAP_PCT_INCREMENT 5
 
 /** Called when Tor has made progress at bootstrapping its directory
  * information and initial circuits.
@@ -4882,7 +4867,7 @@ control_event_bootstrap(bootstrap_status_t status, int progress)
    * can't distinguish what the connection is going to be for. */
   if (status == BOOTSTRAP_STATUS_HANDSHAKE) {
     if (bootstrap_percent < BOOTSTRAP_STATUS_CONN_OR) {
-      status =  BOOTSTRAP_STATUS_HANDSHAKE_DIR;
+      status = BOOTSTRAP_STATUS_HANDSHAKE_DIR;
     } else {
       status = BOOTSTRAP_STATUS_HANDSHAKE_OR;
     }
@@ -4890,9 +4875,19 @@ control_event_bootstrap(bootstrap_status_t status, int progress)
 
   if (status > bootstrap_percent ||
       (progress && progress > bootstrap_percent)) {
+    int loglevel = LOG_NOTICE;
     bootstrap_status_to_string(status, &tag, &summary);
-    tor_log(status ? LOG_NOTICE : LOG_INFO, LD_CONTROL,
-        "Bootstrapped %d%%: %s.", progress ? progress : status, summary);
+
+    if (status <= bootstrap_percent &&
+        (progress < notice_bootstrap_percent + BOOTSTRAP_PCT_INCREMENT)) {
+      /* We log the message at info if the status hasn't advanced, and if less
+       * than BOOTSTRAP_PCT_INCREMENT progress has been made.
+       */
+      loglevel = LOG_INFO;
+    }
+
+    tor_log(loglevel, LD_CONTROL,
+            "Bootstrapped %d%%: %s", progress ? progress : status, summary);
     tor_snprintf(buf, sizeof(buf),
         "BOOTSTRAP PROGRESS=%d TAG=%s SUMMARY=\"%s\"",
         progress ? progress : status, tag, summary);
@@ -4908,15 +4903,22 @@ control_event_bootstrap(bootstrap_status_t status, int progress)
       bootstrap_percent = progress;
       bootstrap_problems = 0; /* Progress! Reset our problem counter. */
     }
+    if (loglevel == LOG_NOTICE &&
+        bootstrap_percent > notice_bootstrap_percent) {
+      /* Remember that we gave a notice at this level. */
+      notice_bootstrap_percent = bootstrap_percent;
+    }
   }
 }
 
 /** Called when Tor has failed to make bootstrapping progress in a way
  * that indicates a problem. <b>warn</b> gives a hint as to why, and
- * <b>reason</b> provides an "or_conn_end_reason" tag.
+ * <b>reason</b> provides an "or_conn_end_reason" tag.  <b>or_conn</b>
+ * is the connection that caused this problem.
  */
 MOCK_IMPL(void,
-control_event_bootstrap_problem, (const char *warn, int reason))
+          control_event_bootstrap_problem, (const char *warn, int reason,
+                                            or_connection_t *or_conn))
 {
   int status = bootstrap_percent;
   const char *tag, *summary;
@@ -4926,6 +4928,11 @@ control_event_bootstrap_problem, (const char *warn, int reason))
 
   /* bootstrap_percent must not be in "undefined" state here. */
   tor_assert(status >= 0);
+
+  if (or_conn->have_noted_bootstrap_problem)
+    return;
+
+  or_conn->have_noted_bootstrap_problem = 1;
 
   if (bootstrap_percent == 100)
     return; /* already bootstrapped; nothing to be done here. */
@@ -4938,9 +4945,10 @@ control_event_bootstrap_problem, (const char *warn, int reason))
   if (reason == END_OR_CONN_REASON_NO_ROUTE)
     recommendation = "warn";
 
-  if (get_options()->UseBridges &&
-      !any_bridge_descriptors_known() &&
-      !any_pending_bridge_descriptor_fetches())
+  /* If we are using bridges and all our OR connections are now
+     closed, it means that we totally failed to connect to our
+     bridges. Throw a warning. */
+  if (get_options()->UseBridges && !any_other_active_or_conns(or_conn))
     recommendation = "warn";
 
   if (we_are_hibernating())
@@ -4996,6 +5004,130 @@ control_event_transport_launched(const char *mode, const char *transport_name,
   send_control_event(EVENT_TRANSPORT_LAUNCHED, ALL_FORMATS,
                      "650 TRANSPORT_LAUNCHED %s %s %s %u\r\n",
                      mode, transport_name, fmt_addr(addr), port);
+}
+
+/** Convert rendezvous auth type to string for HS_DESC control events
+ */
+const char *
+rend_auth_type_to_string(rend_auth_type_t auth_type)
+{
+  const char *str;
+
+  switch (auth_type) {
+    case REND_NO_AUTH:
+      str = "NO_AUTH";
+      break;
+    case REND_BASIC_AUTH:
+      str = "BASIC_AUTH";
+      break;
+    case REND_STEALTH_AUTH:
+      str = "STEALTH_AUTH";
+      break;
+    default:
+      str = "UNKNOWN";
+  }
+
+  return str;
+}
+
+/** Return a longname the node whose identity is <b>id_digest</b>. If
+ * node_get_by_id() returns NULL, base 16 encoding of <b>id_digest</b> is
+ * returned instead.
+ *
+ * This function is not thread-safe.  Each call to this function invalidates
+ * previous values returned by this function.
+ */
+MOCK_IMPL(const char *,
+node_describe_longname_by_id,(const char *id_digest))
+{
+  static char longname[MAX_VERBOSE_NICKNAME_LEN+1];
+  node_get_verbose_nickname_by_id(id_digest, longname);
+  return longname;
+}
+
+/** send HS_DESC requested event.
+ *
+ * <b>rend_query</b> is used to fetch requested onion address and auth type.
+ * <b>hs_dir</b> is the description of contacting hs directory.
+ * <b>desc_id_base32</b> is the ID of requested hs descriptor.
+ */
+void
+control_event_hs_descriptor_requested(const rend_data_t *rend_query,
+                                      const char *id_digest,
+                                      const char *desc_id_base32)
+{
+  if (!id_digest || !rend_query || !desc_id_base32) {
+    log_warn(LD_BUG, "Called with rend_query==%p, "
+             "id_digest==%p, desc_id_base32==%p",
+             rend_query, id_digest, desc_id_base32);
+    return;
+  }
+
+  send_control_event(EVENT_HS_DESC, ALL_FORMATS,
+                     "650 HS_DESC REQUESTED %s %s %s %s\r\n",
+                     rend_query->onion_address,
+                     rend_auth_type_to_string(rend_query->auth_type),
+                     node_describe_longname_by_id(id_digest),
+                     desc_id_base32);
+}
+
+/** send HS_DESC event after got response from hs directory.
+ *
+ * NOTE: this is an internal function used by following functions:
+ * control_event_hs_descriptor_received
+ * control_event_hs_descriptor_failed
+ *
+ * So do not call this function directly.
+ */
+void
+control_event_hs_descriptor_receive_end(const char *action,
+                                        const rend_data_t *rend_query,
+                                        const char *id_digest)
+{
+  if (!action || !rend_query || !id_digest) {
+    log_warn(LD_BUG, "Called with action==%p, rend_query==%p, "
+             "id_digest==%p", action, rend_query, id_digest);
+    return;
+  }
+
+  send_control_event(EVENT_HS_DESC, ALL_FORMATS,
+                     "650 HS_DESC %s %s %s %s\r\n",
+                     action,
+                     rend_query->onion_address,
+                     rend_auth_type_to_string(rend_query->auth_type),
+                     node_describe_longname_by_id(id_digest));
+}
+
+/** send HS_DESC RECEIVED event
+ *
+ * called when a we successfully received a hidden service descriptor.
+ */
+void
+control_event_hs_descriptor_received(const rend_data_t *rend_query,
+                                     const char *id_digest)
+{
+  if (!rend_query || !id_digest) {
+    log_warn(LD_BUG, "Called with rend_query==%p, id_digest==%p",
+             rend_query, id_digest);
+    return;
+  }
+  control_event_hs_descriptor_receive_end("RECEIVED", rend_query, id_digest);
+}
+
+/** send HS_DESC FAILED event
+ *
+ * called when request for hidden service descriptor returned failure.
+ */
+void
+control_event_hs_descriptor_failed(const rend_data_t *rend_query,
+                                   const char *id_digest)
+{
+  if (!rend_query || !id_digest) {
+    log_warn(LD_BUG, "Called with rend_query==%p, id_digest==%p",
+             rend_query, id_digest);
+    return;
+  }
+  control_event_hs_descriptor_receive_end("FAILED", rend_query, id_digest);
 }
 
 /** Free any leftover allocated memory of the control.c subsystem. */

@@ -842,10 +842,11 @@ name_parse(u8 *packet, int length, int *idx, char *name_out, size_t name_out_len
 		}
 		if (label_len > 63) return -1;
 		if (cp != name_out) {
-			if (cp + 1 >= end) return -1;
+			if (cp >= name_out + name_out_len - 1) return -1;
 			*cp++ = '.';
 		}
-		if (cp + label_len >= end) return -1;
+		if (label_len > name_out_len ||
+			cp >= name_out + name_out_len - label_len) return -1;
 		memcpy(cp, packet + j, label_len);
 		cp += label_len;
 		j += label_len;
@@ -3014,7 +3015,8 @@ resolv_conf_parse_line(char *const start, int flags) {
 
 	if (!strcmp(first_token, "nameserver") && (flags & DNS_OPTION_NAMESERVERS)) {
 		const char *const nameserver = NEXT_TOKEN;
-		evdns_nameserver_ip_add(nameserver);
+		if (nameserver)
+			evdns_nameserver_ip_add(nameserver);
 	} else if (!strcmp(first_token, "domain") && (flags & DNS_OPTION_SEARCH)) {
 		const char *const domain = NEXT_TOKEN;
 		if (domain) {
