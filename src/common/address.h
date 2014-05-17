@@ -152,6 +152,7 @@ const char * fmt_addr32(uint32_t addr);
 smartlist_t *get_interface_address6(int severity, sa_family_t family);
 int get_stable_interface_address6(int severity, sa_family_t family,
                                   tor_addr_t* addr);
+MOCK_DECL(smartlist_t *, get_interface_addresses_raw, (int severity));
 
 /** Flag to specify how to do a comparison between addresses.  In an "exact"
  * comparison, addresses are equivalent only if they are in the same family

@@ -723,16 +723,39 @@ done:
   ;
 }
 
+static smartlist_t *
+mocked_get_interface_addresses_raw(int severity)
+{
+  smartlist_t *pretend_addrs = smartlist_new();
+  tor_addr_t *addr = NULL;
+  (void) severity;
+  /* Make an LAN ipv4 addr (192.168.1.1) */
+  addr = tor_calloc(1, sizeof(*addr));
+  tor_addr_parse(addr, "192.168.1.1");
+  smartlist_add(pretend_addrs, addr);
+  /* Make an WAN ipv4 addr (38.229.72.14) */
+  addr = tor_calloc(1, sizeof(*addr));
+  tor_addr_parse(addr, "38.229.72.14");
+  smartlist_add(pretend_addrs, addr);
+  /* Make an WAN ipv6 addr (38.229.72.14) */
+  addr = tor_calloc(1, sizeof(*addr));
+  tor_addr_parse(addr, "2620:0:6b0:b:1a1a:0:26e5:480c");
+  smartlist_add(pretend_addrs, addr);
+  return pretend_addrs;
+}
+
+
 static void
 test_get_interface_address6(void *data)
 {
   smartlist_t *ipv6s = NULL;
   smartlist_t *ipv4s = NULL;
   (void) data; /* Unused param */
+  MOCK(get_interface_addresses_raw, mocked_get_interface_addresses_raw);
   /* get ipv4 addrs using the get_interface_address6 fn */
   ipv4s = get_interface_address6(LOG_DEBUG, AF_INET);
   if (ipv4s != NULL) {
-    SMARTLIST_FOREACH(ipv4s, tor_addr_t *, a,
+    SMARTLIST_FOREACH(ipv4s, const tor_addr_t *, a,
             tt_int_op(tor_addr_family(a), ==, AF_INET));
     /* More tests here */
     SMARTLIST_FOREACH_BEGIN(ipv4s, tor_addr_t *, a) {
@@ -756,6 +779,7 @@ done:
   smartlist_free(ipv6s);
   if(ipv4s) SMARTLIST_FOREACH(ipv4s, tor_addr_t *, a, tor_free(a));
   smartlist_free(ipv4s);
+  UNMOCK(get_interface_addresses_raw);
 }
 
 
@@ -1008,6 +1032,7 @@ test_get_first_address_by_af(void *data)
   (void) (data); /* Unused param */
 
   /* Add 3 addresses to smartlist: two IPv4, one IPv6. */
+  tmpaddr = tor_calloc(1, sizeof(*tmpaddr));
   tor_addr_parse(tmpaddr, "13.11.9.7");
   smartlist_add(addrlist, tmpaddr);
 
@@ -1022,16 +1047,19 @@ test_get_first_address_by_af(void *data)
 
   resaddr = get_first_address_by_af(addrlist, AF_INET);
   /* Should be the first addr, 13.11.9.7 */
-  tt_assert(tor_addr_eq(resaddr, (tor_addr_t*) smartlist_get(addrlist, 0)));
+  tt_assert(tor_addr_eq(resaddr, (const tor_addr_t*) smartlist_get(addrlist, 0)));
   tt_int_op(tor_addr_family(resaddr), ==, AF_INET);
 
   resaddr = get_first_address_by_af(addrlist, AF_INET6);
   /* Should be the IPv6 addr */
   tt_assert(tor_addr_eq(resaddr, (tor_addr_t*) smartlist_get(addrlist, 2)));
   tt_int_op(tor_addr_family(resaddr), ==, AF_INET6);
+
   done:
-    if (addrlist) SMARTLIST_FOREACH(addrlist, tor_addr_t *, a, tor_free(a));
-    smartlist_free(addrlist);
+    if (addrlist) {
+        SMARTLIST_FOREACH(addrlist, tor_addr_t *, a, tor_free(a));
+        smartlist_free(addrlist);
+    }
 }
 
 static void
@@ -1041,6 +1069,7 @@ test_get_stable_interface_address6(void *data)
   tor_addr_t *addr = tor_calloc(1, sizeof(*addr));
   tor_addr_t *old_addr = tor_calloc(1, sizeof(*old_addr));
   (void) data;
+  MOCK(get_interface_addresses_raw, mocked_get_interface_addresses_raw);
 
   /* Don't have an addr, ensure 1 is returned */
   res = get_stable_interface_address6(LOG_DEBUG, AF_INET, addr);
@@ -1083,6 +1112,7 @@ test_get_stable_interface_address6(void *data)
 done:
   tor_free(addr);
   tor_free(old_addr);
+  UNMOCK(get_interface_addresses_raw);
 }
 
 static void

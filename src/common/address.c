@@ -1189,8 +1189,8 @@ typedef ULONG (WINAPI *GetAdaptersAddresses_fn_t)(
  * Return a new smartlist of tor_addr_t on success, and NULL on failure.
  * (An empty smartlist indicates that we successfully learned that we have no
  * addresses.)  Log failure messages at <b>severity</b>. */
-static smartlist_t *
-get_interface_addresses_raw(int severity)
+MOCK_IMPL(smartlist_t *,
+get_interface_addresses_raw, (int severity))
 {
 #if defined(HAVE_GETIFADDRS)
   /* Most free Unixy systems provide getifaddrs, which gives us a linked list
@@ -1462,15 +1462,16 @@ int
 get_stable_interface_address6(int severity, sa_family_t family,
                               tor_addr_t* addr)
 {
-  smartlist_t *list = get_interface_address6(severity, family);
+  smartlist_t *list = NULL;
   const tor_addr_t *first_address;
 
-  if (list == NULL) {
-    return -1; /* Avoid null dereferencing w/ list == NULL */
-  }
   if (family != AF_INET && family != AF_INET6) {
       /* We can't return any other kind of address */
       return -1;
+  }
+  list = get_interface_address6(severity, family);
+  if (list == NULL) {
+    return -1; /* Avoid null dereferencing w/ list == NULL */
   }
   if (smartlist_len(list) <= 0) {
     smartlist_free(list);
