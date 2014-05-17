@@ -729,6 +729,14 @@ mocked_get_interface_addresses_raw(int severity)
   smartlist_t *pretend_addrs = smartlist_new();
   tor_addr_t *addr = NULL;
   (void) severity;
+  /* Make a loopback ipv4 addr (127.0.0.1) */
+  addr = tor_calloc(1, sizeof(*addr));
+  tor_addr_parse(addr, "127.0.0.1");
+  smartlist_add(pretend_addrs, addr);
+  /* Make a multicast ipv4 addr (255.255.255.255) */
+  addr = tor_calloc(1, sizeof(*addr));
+  tor_addr_parse(addr, "255.255.255.255");
+  smartlist_add(pretend_addrs, addr);
   /* Make an LAN ipv4 addr (192.168.1.1) */
   addr = tor_calloc(1, sizeof(*addr));
   tor_addr_parse(addr, "192.168.1.1");
@@ -744,7 +752,26 @@ mocked_get_interface_addresses_raw(int severity)
   return pretend_addrs;
 }
 
+static smartlist_t *
+mocked_get_interface_addresses_raw_null(int severity)
+{
+  (void) severity;
+  return NULL;
+}
 
+static smartlist_t *
+mocked_get_interface_addresses_raw_empty(int severity)
+{
+  smartlist_t *pretend_addrs = smartlist_new();
+  (void) severity;
+  return pretend_addrs;
+}
+
+#define check_addrlist_fam(list, fam) do {                        \
+  if (list != NULL) {                                             \
+    SMARTLIST_FOREACH(ipv4s, const tor_addr_t *, a,               \
+        tt_int_op(tor_addr_family(a), ==, AF_INET));              \
+  }} while(0)
 static void
 test_get_interface_address6(void *data)
 {
@@ -754,26 +781,32 @@ test_get_interface_address6(void *data)
   MOCK(get_interface_addresses_raw, mocked_get_interface_addresses_raw);
   /* get ipv4 addrs using the get_interface_address6 fn */
   ipv4s = get_interface_address6(LOG_DEBUG, AF_INET);
-  if (ipv4s != NULL) {
-    SMARTLIST_FOREACH(ipv4s, const tor_addr_t *, a,
-            tt_int_op(tor_addr_family(a), ==, AF_INET));
-    /* More tests here */
-    SMARTLIST_FOREACH_BEGIN(ipv4s, tor_addr_t *, a) {
-      TT_BLATHER(("v6 address: %s (family=%d)", fmt_addr(a),
-                  tor_addr_family(a)));
-    } SMARTLIST_FOREACH_END(a);
-  }
+  check_addrlist_fam(ipv4s, AF_INET);
   /* Get ipv6 addrs */
   ipv6s = get_interface_address6(LOG_DEBUG, AF_INET6);
-  if (ipv6s != NULL) {
-    SMARTLIST_FOREACH(ipv6s, tor_addr_t *, a,
-            tt_int_op(tor_addr_family(a), ==, AF_INET6));
-    /* More tests here */
-    SMARTLIST_FOREACH_BEGIN(ipv6s, tor_addr_t *, a) {
-      TT_BLATHER(("v6 address: %s (family=%d)", fmt_addr(a),
-                  tor_addr_family(a)));
-    } SMARTLIST_FOREACH_END(a);
-  }
+  check_addrlist_fam(ipv6s, AF_INET6);
+  UNMOCK(get_interface_addresses_raw);
+  /* Use the "alternate method" */
+  MOCK(get_interface_addresses_raw, mocked_get_interface_addresses_raw_null);
+  /* get ipv4 addrs using the get_interface_address6 fn */
+  ipv4s = get_interface_address6(LOG_DEBUG, AF_INET);
+  check_addrlist_fam(ipv4s, AF_INET);
+  /* Get ipv6 addrs */
+  ipv6s = get_interface_address6(LOG_DEBUG, AF_INET6);
+  check_addrlist_fam(ipv6s, AF_INET6);
+  /* Test that we can't get addrs from AF_UNSPEC via the dumb method */
+  ipv6s = get_interface_address6(LOG_DEBUG, AF_UNSPEC);
+  tt_ptr_op(ipv6s, ==, NULL);
+  UNMOCK(get_interface_addresses_raw);
+  /* Use the "alternate method" */
+  MOCK(get_interface_addresses_raw, mocked_get_interface_addresses_raw_empty);
+  /* These should return NULL */
+  ipv4s = get_interface_address6(LOG_DEBUG, AF_INET);
+  tt_ptr_op(ipv4s, ==, NULL);
+  ipv6s = get_interface_address6(LOG_DEBUG, AF_INET6);
+  tt_ptr_op(ipv6s, ==, NULL);
+  ipv6s = get_interface_address6(LOG_DEBUG, AF_UNSPEC);
+  tt_ptr_op(ipv6s, ==, NULL);
 done:
   if(ipv6s) SMARTLIST_FOREACH(ipv6s, tor_addr_t *, a, tor_free(a));
   smartlist_free(ipv6s);
@@ -781,6 +814,7 @@ done:
   smartlist_free(ipv4s);
   UNMOCK(get_interface_addresses_raw);
 }
+#undef check_addrlist_fam
 
 
 /** Test tor_addr_port_parse(). */
@@ -1134,6 +1168,68 @@ done:
   tor_free(dest);
 }
 
+static void
+test_addr_make_null (void *data)
+{
+  tor_addr_t *addr = tor_malloc(sizeof(*addr));
+  tor_addr_t *refaddr = tor_malloc(sizeof(*refaddr));
+  (void) data;
+  /* Make an ipv4 addr, and null it out */
+  tor_addr_parse(addr, "123.12.3.123");
+  tor_addr_parse(refaddr, "0.0.0.0"); /* NULL ipv4 addr */
+  tor_addr_make_null(addr, AF_INET);
+  tt_assert(tor_addr_eq(addr, refaddr));
+  tt_int_op(addr->family, ==, AF_INET);
+  /* Make an ipv6 addr, and null it out */
+  tor_addr_parse(addr, "2001:0db8:85a3:0042:1000:8a2e:0370:7334");
+  tor_addr_parse(refaddr, "[::]"); /* NULL inet6 addr */
+  tor_addr_make_null(addr, AF_INET6);
+  tt_assert(tor_addr_eq(addr, refaddr));
+  tt_int_op(addr->family, ==, AF_INET6);
+done:
+  tor_free(addr);
+  tor_free(refaddr);
+}
+
+static void
+test_addr_port_copy (void *data)
+{
+  tor_addr_port_t srcaddr;
+  tor_addr_port_t destaddr;
+  (void) data;
+  /* Test with an ipv4 addr with port*/
+  tor_addr_port_parse(0, "123.12.3.123:102", &srcaddr.addr, &srcaddr.port);
+  tor_addr_make_null(&destaddr.addr, AF_INET);
+  destaddr.port = 0;
+  tor_addr_port_copy(&destaddr, &srcaddr);
+  tt_assert(tor_addr_eq(&srcaddr.addr, &destaddr.addr));
+  tt_int_op(srcaddr.port, ==, destaddr.port);
+  /* Test with an ipv4 addr without port*/
+  tor_addr_port_parse(0, "123.12.3.123", &srcaddr.addr, &srcaddr.port);
+  tor_addr_make_null(&destaddr.addr, AF_INET);
+  destaddr.port = 0;
+  tor_addr_port_copy(&destaddr, &srcaddr);
+  tt_assert(tor_addr_eq(&srcaddr.addr, &destaddr.addr));
+  tt_int_op(srcaddr.port, ==, destaddr.port);
+  /* Test with an ipv4 addr with port*/
+  tor_addr_port_parse(0, "2001:0db8:85a3:0042:1000:8a2e:0370:7334:102",
+      &srcaddr.addr, &srcaddr.port);
+  tor_addr_make_null(&destaddr.addr, AF_INET);
+  destaddr.port = 0;
+  tor_addr_port_copy(&destaddr, &srcaddr);
+  tt_assert(tor_addr_eq(&srcaddr.addr, &destaddr.addr));
+  tt_int_op(srcaddr.port, ==, destaddr.port);
+  /* Test with an ipv4 addr without port*/
+  tor_addr_port_parse(0, "2001:0db8:85a3:0042:1000:8a2e:0370:7334",
+      &srcaddr.addr, &srcaddr.port);
+  tor_addr_make_null(&destaddr.addr, AF_INET);
+  destaddr.port = 0;
+  tor_addr_port_copy(&destaddr, &srcaddr);
+  tt_assert(tor_addr_eq(&srcaddr.addr, &destaddr.addr));
+  tt_int_op(srcaddr.port, ==, destaddr.port);
+done:
+  ;
+}
 #define ADDR_LEGACY(name)                                               \
   { #name, legacy_test_helper, 0, &legacy_setup, test_addr_ ## name }
 
@@ -1150,6 +1246,8 @@ struct testcase_t addr_tests[] = {
   { "get_interface_address6", test_get_interface_address6, 0, NULL, NULL},
   { "get_stable_interface_address6", test_get_stable_interface_address6, 0, NULL, NULL},
   { "addr_clone", test_addr_clone, 0, NULL, NULL},
+  { "addr_make_null", test_addr_make_null, 0, NULL, NULL},
+  { "addr_port_copy", test_addr_port_copy, 0, NULL, NULL},
   END_OF_TESTCASES
 };
 
