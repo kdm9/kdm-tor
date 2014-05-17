@@ -893,6 +893,18 @@ tor_addr_copy(tor_addr_t *dest, const tor_addr_t *src)
   memcpy(dest, src, sizeof(tor_addr_t));
 }
 
+/** Copy a tor_addr_port_t from <b>src</b> to <b>dest</b>.
+ */
+void
+tor_addr_port_copy(tor_addr_port_t *dest, const tor_addr_port_t *src)
+{
+  if (src == dest)
+    return;
+  tor_assert(src);
+  tor_assert(dest);
+  tor_addr_copy(&(dest->addr), &(src->addr));
+  dest->port = src->port;
+}
 /** Given two addresses <b>addr1</b> and <b>addr2</b>, return 0 if the two
  * addresses are equivalent under the mask mbits, less than 0 if addr1
  * precedes addr2, and greater than 0 otherwise.
@@ -907,6 +919,21 @@ tor_addr_compare(const tor_addr_t *addr1, const tor_addr_t *addr2,
 {
   return tor_addr_compare_masked(addr1, addr2, 128, how);
 }
+
+/** Given two <b>tor_addr_port_t *</b>s, return a truthful int value iif both
+ * the addresses and ports in <b>a</b> and <b>b</b> are equal. If NULL is
+ * passed to either address, 0 is returned.
+ */
+int tor_addr_port_eq(const tor_addr_port_t *a, const tor_addr_port_t *b)
+{
+  int addrs_eq = 0;
+  if (a == NULL || b == NULL) {
+    return 0;
+  }
+  addrs_eq = tor_addr_eq(&(a->addr), &(b->addr));
+  return addrs_eq && a->port == b->port;
+}
+
 
 /** As tor_addr_compare(), but only looks at the first <b>mask</b> bits of
  * the address.
