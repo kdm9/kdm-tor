@@ -1,0 +1,45 @@
+#!/bin/bash
+
+# Find required binaries
+LCOV_PATH=`which lcov`
+GENHTML_PATH=`which genhtml`
+
+# Bail out if we can't find them
+if [ -z "${LCOV_PATH}" ] || [ -z "${GENHTML_PATH}" ]
+then
+	echo "Error: Couldn't find lcov or genhtml. lcov must be installed."
+	exit 1
+fi
+
+if [ ! -x ./src/test/test ]
+then
+	echo "Please run make before running this script."
+	echo "We need to be able to run './src/test/test'."
+	exit 1
+fi
+
+# make output dir
+out_dir="$1"
+if [ -z "$out_dir" ]
+then
+	out_dir='./coverage_html'
+fi
+
+set -e
+
+rm -r "$out_dir"
+mkdir -p "$out_dir"
+
+# Reset coverage counter
+${LCOV_PATH} --rc lcov_branch_coverage=1 --directory .  --zerocounters
+
+# Run tests
+./src/test/test
+
+# Generate lcov file
+${LCOV_PATH} --capture --rc lcov_branch_coverage=1  --no-external --directory . --output-file "$out_dir/lcov.tmp"
+${LCOV_PATH} --remove "$out_dir/lcov.tmp" --rc lcov_branch_coverage=1 'test/*' '/usr/*' --output-file "$out_dir/lcov.info"
+
+
+# Generate html coverage
+${GENHTML_PATH} --branch-coverage -o "$out_dir" "$out_dir/lcov.info"
