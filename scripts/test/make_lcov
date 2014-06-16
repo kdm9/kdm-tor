@@ -38,7 +38,7 @@ ${LCOV_PATH} --rc lcov_branch_coverage=1 --directory .  --zerocounters
 
 # Generate lcov file
 ${LCOV_PATH} --capture --rc lcov_branch_coverage=1  --no-external --directory . --output-file "$out_dir/lcov.tmp"
-${LCOV_PATH} --remove "$out_dir/lcov.tmp" --rc lcov_branch_coverage=1 'test/*' '/usr/*' --output-file "$out_dir/lcov.info"
+${LCOV_PATH} --remove "$out_dir/lcov.tmp" --rc lcov_branch_coverage=1 'test/*' 'ext/tinytest*' '/usr/*' --output-file "$out_dir/lcov.info"
 
 
 # Generate html coverage
