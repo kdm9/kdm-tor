@@ -1008,7 +1008,7 @@ node_set_last_reachability(node_t *node, tor_addr_port_t *ap, time_t value)
 /** Check if <b>addr</b> has replied to this node, by searching a smartlist of
  * <b>addr_reachability_t</b>s.
  */
-int
+static int
 addr_has_replied(const tor_addr_t* addr, const uint32_t port,
         const smartlist_t *reachability)
 {
@@ -1020,7 +1020,7 @@ addr_has_replied(const tor_addr_t* addr, const uint32_t port,
   return 0;
 }
 
-int
+static int
 all_listeners_have_replied(const routerinfo_t *ri,
         const smartlist_t *reachability)
 {
