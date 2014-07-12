@@ -1268,6 +1268,12 @@ test_addr_port_eq (void *data)
   tt_assert(tor_addr_eq(&addr1.addr, &addr2.addr));
   tt_int_op(addr1.port, ==, addr2.port);
   tt_assert(tor_addr_port_eq(&addr1, &addr2));
+  /* load two ipv4 addr_port_ts with different addrs & test for inequality */
+  tor_addr_port_parse(0, "123.12.3.123:102", &addr1.addr, &addr1.port);
+  tor_addr_port_parse(0, "1.2.3.4:102", &addr2.addr, &addr2.port);
+  tt_assert(!tor_addr_eq(&addr1.addr, &addr2.addr));
+  tt_int_op(addr1.port, ==, addr2.port);
+  tt_assert(!tor_addr_port_eq(&addr1, &addr2));
   /* load two ipv4 addr_port_ts with different ports & test for inequality */
   tor_addr_port_parse(0, "123.12.3.123:1234", &addr1.addr, &addr1.port);
   tor_addr_port_parse(0, "123.12.3.123:1", &addr2.addr, &addr2.port);
@@ -1290,6 +1296,10 @@ test_addr_port_eq (void *data)
   tt_assert(tor_addr_eq(&addr1.addr, &addr2.addr));
   tt_int_op(addr1.port, !=, addr2.port);
   tt_assert(!tor_addr_port_eq(&addr1, &addr2));
+  /* Test with NULLs */
+  tt_int_op(tor_addr_port_eq(NULL, &addr2), ==, 0);
+  tt_int_op(tor_addr_port_eq(&addr1, NULL), ==, 0);
+  tt_int_op(tor_addr_port_eq(NULL, NULL), ==, 0);
 done:
   ;
 }
