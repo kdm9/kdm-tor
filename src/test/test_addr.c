@@ -767,6 +767,23 @@ mocked_get_interface_addresses_raw_empty(int severity)
   return pretend_addrs;
 }
 
+static smartlist_t *
+mocked_get_interface_address6_null(int severity, sa_family_t family)
+{
+  (void) severity;
+  (void) family;
+  return NULL;
+}
+
+static smartlist_t *
+mocked_get_interface_address6_empty(int severity, sa_family_t family)
+{
+  smartlist_t *pretend_addrs = smartlist_new();
+  (void) severity;
+  (void) family;
+  return pretend_addrs;
+}
+
 #define check_addrlist_fam(list, fam) do {                        \
   if (list != NULL) {                                             \
     SMARTLIST_FOREACH(ipv4s, const tor_addr_t *, a,               \
@@ -1104,33 +1121,27 @@ test_get_stable_interface_address6(void *data)
   tor_addr_t *old_addr = tor_calloc(1, sizeof(*old_addr));
   (void) data;
   MOCK(get_interface_addresses_raw, mocked_get_interface_addresses_raw);
-
   /* Don't have an addr, ensure 1 is returned */
   res = get_stable_interface_address6(LOG_DEBUG, AF_INET, addr);
   tt_int_op(res, ==, 1);
-
   /* Should have an addr, ensure */
   memcpy(old_addr, addr, sizeof(*addr));
   memset(addr, 0, sizeof(*addr));
   res = get_stable_interface_address6(LOG_DEBUG, AF_INET, addr);
   tt_int_op(res, ==, 0);
   tt_assert(tor_addr_eq(addr, old_addr));
-
   /****************** Do it all again with AF_INET6 *******************/
   memset(addr, 0, sizeof(*addr));
   memset(old_addr, 0, sizeof(*old_addr));
-
   /* Don't have an addr, ensure 1 is returned */
   res = get_stable_interface_address6(LOG_DEBUG, AF_INET6, addr);
   tt_int_op(res, ==, 1);
-
   /* Should have an addr, ensure */
   memcpy(old_addr, addr, sizeof(*addr));
   memset(addr, 0, sizeof(*addr));
   res = get_stable_interface_address6(LOG_DEBUG, AF_INET6, addr);
   tt_int_op(res, ==, 0);
   tt_assert(tor_addr_eq(addr, old_addr));
-
   /******************* Try with AF_UNSPEC & AF_UNIX ******************/
   /* Both of these should return -1, as get_stable_interface_address6 doesn't
    * support these address types
@@ -1138,15 +1149,27 @@ test_get_stable_interface_address6(void *data)
   memset(addr, 0, sizeof(*addr));
   res = get_stable_interface_address6(LOG_DEBUG, AF_UNSPEC, addr);
   tt_int_op(res, ==, -1);
-
   memset(addr, 0, sizeof(*addr));
   res = get_stable_interface_address6(LOG_DEBUG, AF_UNIX, addr);
   tt_int_op(res, ==, -1);
-
+  /* Try mocking out the get_interface_address6 funtion this time */
+  MOCK(get_interface_address6, mocked_get_interface_address6_empty);
+  res = get_stable_interface_address6(LOG_DEBUG, AF_INET, addr);
+  tt_int_op(res, ==, -1);
+  res = get_stable_interface_address6(LOG_DEBUG, AF_INET6, addr);
+  tt_int_op(res, ==, -1);
+  UNMOCK(get_interface_address6);
+  MOCK(get_interface_address6, mocked_get_interface_address6_null);
+  res = get_stable_interface_address6(LOG_DEBUG, AF_INET, addr);
+  tt_int_op(res, ==, -1);
+  res = get_stable_interface_address6(LOG_DEBUG, AF_INET6, addr);
+  tt_int_op(res, ==, -1);
+  UNMOCK(get_interface_address6);
 done:
   tor_free(addr);
   tor_free(old_addr);
   UNMOCK(get_interface_addresses_raw);
+  UNMOCK(get_interface_address6);
 }
 
 static void
@@ -1162,7 +1185,7 @@ test_addr_clone (void *data)
   dest = tor_addr_clone(src);
   /* test equality */
   tt_ptr_op(src, !=, dest);
-  tt_int_op(tor_addr_eq(src, dest), ==, 1);
+  tt_assert(tor_addr_eq(src, dest));
 done:
   tor_free(src);
   tor_free(dest);
