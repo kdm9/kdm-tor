@@ -1388,7 +1388,7 @@ get_interface_address6, (int severity, sa_family_t family))
 
   /* Try to do this the smart way if possible. */
   if ((addrs = get_interface_addresses_raw(severity))) {
-    SMARTLIST_FOREACH_BEGIN(addrs, tor_addr_t *, a) {
+    SMARTLIST_FOREACH_BEGIN(addrs, const tor_addr_t *, a) {
       if (family != AF_UNSPEC && family != tor_addr_family(a))
         continue;
       if (tor_addr_is_loopback(a) ||
@@ -1472,7 +1472,7 @@ get_interface_address6, (int severity, sa_family_t family))
 const tor_addr_t *
 get_first_address_by_af(smartlist_t *list, sa_family_t family)
 {
-  SMARTLIST_FOREACH_BEGIN(list, tor_addr_t *, a) {
+  SMARTLIST_FOREACH_BEGIN(list, const tor_addr_t *, a) {
     if (tor_addr_family(a) == family)
       return a;
   } SMARTLIST_FOREACH_END(a);
@@ -1528,7 +1528,7 @@ get_stable_interface_address6(int severity, sa_family_t family,
   /* If the previous address is in the list, stick to it. */
   switch (family) {
     case AF_INET:
-      SMARTLIST_FOREACH_BEGIN(list, tor_addr_t *, a) {
+      SMARTLIST_FOREACH_BEGIN(list, const tor_addr_t *, a) {
         if (tor_addr_eq(last_discovered_ipv4_address, a)) {
           tor_addr_copy(addr, a);
           ret = 0;
@@ -1537,7 +1537,7 @@ get_stable_interface_address6(int severity, sa_family_t family,
       } SMARTLIST_FOREACH_END(a);
       break;
     case AF_INET6:
-      SMARTLIST_FOREACH_BEGIN(list, tor_addr_t *, a) {
+      SMARTLIST_FOREACH_BEGIN(list, const tor_addr_t *, a) {
         if (tor_addr_eq(last_discovered_ipv6_address, a)) {
           tor_addr_copy(addr, a);
           ret = 0;
