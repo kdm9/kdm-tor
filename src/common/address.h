@@ -172,7 +172,7 @@ int tor_addr_compare_masked(const tor_addr_t *addr1, const tor_addr_t *addr2,
  * "exactly". */
 #define tor_addr_eq(a,b) (0==tor_addr_compare((a),(b),CMP_EXACT))
 
-int	tor_addr_port_eq(const tor_addr_port_t *a, const tor_addr_port_t *b);
+int tor_addr_port_eq(const tor_addr_port_t *a, const tor_addr_port_t *b);
 
 unsigned int tor_addr_hash(const tor_addr_t *addr);
 int tor_addr_is_v4(const tor_addr_t *addr);
@@ -185,9 +185,9 @@ int tor_addr_is_internal_(const tor_addr_t *ip, int for_listening,
 /* 32 nybbles, 32 dots, 8 characters of "ip6.arpa", 1 NUL: 73 characters. */
 #define REVERSE_LOOKUP_NAME_BUF_LEN 73
 int tor_addr_to_PTR_name(char *out, size_t outlen,
-                                    const tor_addr_t *addr);
+                         const tor_addr_t *addr);
 int tor_addr_parse_PTR_name(tor_addr_t *result, const char *address,
-                                       int family, int accept_regular);
+                            int family, int accept_regular);
 
 int tor_addr_port_lookup(const char *s, tor_addr_t *addr_out,
                         uint16_t *port_out);
@@ -225,7 +225,7 @@ int tor_addr_hostname_is_local(const char *name);
 /* IPv4 helpers */
 int is_internal_IP(uint32_t ip, int for_listening);
 int addr_port_lookup(int severity, const char *addrport, char **address,
-                    uint32_t *addr, uint16_t *port_out);
+                     uint32_t *addr, uint16_t *port_out);
 int parse_port_range(const char *port, uint16_t *port_min_out,
                      uint16_t *port_max_out);
 int addr_mask_get_bits(uint32_t mask);
@@ -236,7 +236,8 @@ char *tor_dup_ip(uint32_t addr) ATTR_MALLOC;
 
 tor_addr_port_t *tor_addr_port_new(const tor_addr_t *addr, uint16_t port);
 
-const tor_addr_t *get_first_address_by_af(smartlist_t *list, sa_family_t family);
+const tor_addr_t *get_first_address_by_af(smartlist_t *list,
+                                          sa_family_t family);
 
 #endif
 

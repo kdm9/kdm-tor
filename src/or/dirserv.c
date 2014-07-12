@@ -997,7 +997,7 @@ node_reachable_since(node_t *node, const time_t time, int consider_ipv6)
 
 /* Check if a router is running and is reachable */
 static int
-router_is_running (routerinfo_t *router, node_t *node,
+router_is_running(routerinfo_t *router, node_t *node,
     const or_options_t *options, const time_t now)
 {
   int have_ipv6 = options->AuthDirHasIPv6Connectivity && \
@@ -1019,7 +1019,6 @@ router_is_running (routerinfo_t *router, node_t *node,
     return node_reachable_since(node, now - REACHABLE_TIMEOUT, have_ipv6);
   }
 }
-
 
 /** Treat a router as alive if
  *    - It's me, and I'm not hibernating.

@@ -924,7 +924,8 @@ tor_addr_compare(const tor_addr_t *addr1, const tor_addr_t *addr2,
  * the addresses and ports in <b>a</b> and <b>b</b> are equal. If NULL is
  * passed to either address, 0 is returned.
  */
-int tor_addr_port_eq(const tor_addr_port_t *a, const tor_addr_port_t *b)
+int
+tor_addr_port_eq(const tor_addr_port_t *a, const tor_addr_port_t *b)
 {
   int addrs_eq = 0;
   if (a == NULL || b == NULL) {
@@ -933,7 +934,6 @@ int tor_addr_port_eq(const tor_addr_port_t *a, const tor_addr_port_t *b)
   addrs_eq = tor_addr_eq(&(a->addr), &(b->addr));
   return addrs_eq && a->port == b->port;
 }
-
 
 /** As tor_addr_compare(), but only looks at the first <b>mask</b> bits of
  * the address.
@@ -1557,7 +1557,7 @@ get_stable_interface_address6(int severity, sa_family_t family,
   tor_addr_copy(addr, first_address);
   ret = 1;
 
-cleanup_exit:
+ cleanup_exit:
   if (list != NULL) {
     SMARTLIST_FOREACH(list, tor_addr_t *, a, tor_free(a));
     smartlist_free(list);

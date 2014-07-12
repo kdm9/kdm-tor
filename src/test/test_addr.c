@@ -719,7 +719,7 @@ test_addr_ip6_helpers(void)
 
   test_assert(sizeof(tor_addr_t) >= sizeof(struct in6_addr));
 
-done:
+ done:
   ;
 }
 
@@ -788,12 +788,14 @@ mocked_get_interface_address6_empty(int severity, sa_family_t family)
   if (list != NULL) {                                             \
     SMARTLIST_FOREACH(ipv4s, const tor_addr_t *, a,               \
         tt_int_op(tor_addr_family(a), ==, AF_INET));              \
-  }} while(0)
+  }} while (0)
+
 static void
 test_get_interface_address6(void *data)
 {
   smartlist_t *ipv6s = NULL;
   smartlist_t *ipv4s = NULL;
+
   (void) data; /* Unused param */
   MOCK(get_interface_addresses_raw, mocked_get_interface_addresses_raw);
   /* get ipv4 addrs using the get_interface_address6 fn */
@@ -824,15 +826,15 @@ test_get_interface_address6(void *data)
   tt_ptr_op(ipv6s, ==, NULL);
   ipv6s = get_interface_address6(LOG_DEBUG, AF_UNSPEC);
   tt_ptr_op(ipv6s, ==, NULL);
-done:
-  if(ipv6s) SMARTLIST_FOREACH(ipv6s, tor_addr_t *, a, tor_free(a));
+
+ done:
+  if (ipv6s) SMARTLIST_FOREACH(ipv6s, tor_addr_t *, a, tor_free(a));
   smartlist_free(ipv6s);
-  if(ipv4s) SMARTLIST_FOREACH(ipv4s, tor_addr_t *, a, tor_free(a));
+  if (ipv4s) SMARTLIST_FOREACH(ipv4s, tor_addr_t *, a, tor_free(a));
   smartlist_free(ipv4s);
   UNMOCK(get_interface_addresses_raw);
 }
 #undef check_addrlist_fam
-
 
 /** Test tor_addr_port_parse(). */
 static void
@@ -1073,7 +1075,6 @@ test_addr_is_loopback(void *data)
   ;
 }
 
-
 static void
 test_get_first_address_by_af(void *data)
 {
@@ -1098,7 +1099,8 @@ test_get_first_address_by_af(void *data)
 
   resaddr = get_first_address_by_af(addrlist, AF_INET);
   /* Should be the first addr, 13.11.9.7 */
-  tt_assert(tor_addr_eq(resaddr, (const tor_addr_t*) smartlist_get(addrlist, 0)));
+  tt_assert(tor_addr_eq(resaddr,
+                        (const tor_addr_t*) smartlist_get(addrlist, 0)));
   tt_int_op(tor_addr_family(resaddr), ==, AF_INET);
 
   resaddr = get_first_address_by_af(addrlist, AF_INET6);
@@ -1165,7 +1167,7 @@ test_get_stable_interface_address6(void *data)
   res = get_stable_interface_address6(LOG_DEBUG, AF_INET6, addr);
   tt_int_op(res, ==, -1);
   UNMOCK(get_interface_address6);
-done:
+ done:
   tor_free(addr);
   tor_free(old_addr);
   UNMOCK(get_interface_addresses_raw);
@@ -1173,7 +1175,7 @@ done:
 }
 
 static void
-test_addr_clone (void *data)
+test_addr_clone(void *data)
 {
   tor_addr_t *src, *dest;
   (void) data;
@@ -1186,13 +1188,13 @@ test_addr_clone (void *data)
   /* test equality */
   tt_ptr_op(src, !=, dest);
   tt_assert(tor_addr_eq(src, dest));
-done:
+ done:
   tor_free(src);
   tor_free(dest);
 }
 
 static void
-test_addr_make_null (void *data)
+test_addr_make_null(void *data)
 {
   tor_addr_t *addr = tor_malloc(sizeof(*addr));
   tor_addr_t *refaddr = tor_malloc(sizeof(*refaddr));
@@ -1209,13 +1211,13 @@ test_addr_make_null (void *data)
   tor_addr_make_null(addr, AF_INET6);
   tt_assert(tor_addr_eq(addr, refaddr));
   tt_int_op(addr->family, ==, AF_INET6);
-done:
+ done:
   tor_free(addr);
   tor_free(refaddr);
 }
 
 static void
-test_addr_port_copy (void *data)
+test_addr_port_copy(void *data)
 {
   tor_addr_port_t srcaddr;
   tor_addr_port_t destaddr;
@@ -1251,12 +1253,12 @@ test_addr_port_copy (void *data)
   tor_addr_port_copy(&destaddr, &srcaddr);
   tt_assert(tor_addr_eq(&srcaddr.addr, &destaddr.addr));
   tt_int_op(srcaddr.port, ==, destaddr.port);
-done:
+ done:
   ;
 }
 
 static void
-test_addr_port_eq (void *data)
+test_addr_port_eq(void *data)
 {
   tor_addr_port_t addr1;
   tor_addr_port_t addr2;
@@ -1300,10 +1302,9 @@ test_addr_port_eq (void *data)
   tt_int_op(tor_addr_port_eq(NULL, &addr2), ==, 0);
   tt_int_op(tor_addr_port_eq(&addr1, NULL), ==, 0);
   tt_int_op(tor_addr_port_eq(NULL, NULL), ==, 0);
-done:
+ done:
   ;
 }
-
 
 #define ADDR_LEGACY(name)                                               \
   { #name, legacy_test_helper, 0, &legacy_setup, test_addr_ ## name }
@@ -1319,7 +1320,8 @@ struct testcase_t addr_tests[] = {
   { "is_loopback", test_addr_is_loopback, 0, NULL, NULL },
   { "get_first_addr_by_af", test_get_first_address_by_af, 0, NULL, NULL},
   { "get_interface_address6", test_get_interface_address6, 0, NULL, NULL},
-  { "get_stable_interface_address6", test_get_stable_interface_address6, 0, NULL, NULL},
+  { "get_stable_interface_address6", test_get_stable_interface_address6, 0,
+     NULL, NULL},
   { "addr_clone", test_addr_clone, 0, NULL, NULL},
   { "addr_make_null", test_addr_make_null, 0, NULL, NULL},
   { "addr_port_copy", test_addr_port_copy, 0, NULL, NULL},
