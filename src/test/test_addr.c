@@ -1219,6 +1219,7 @@ test_addr_port_copy (void *data)
 {
   tor_addr_port_t srcaddr;
   tor_addr_port_t destaddr;
+
   (void) data;
   /* Test with an ipv4 addr with port*/
   tor_addr_port_parse(0, "123.12.3.123:102", &srcaddr.addr, &srcaddr.port);
@@ -1234,15 +1235,15 @@ test_addr_port_copy (void *data)
   tor_addr_port_copy(&destaddr, &srcaddr);
   tt_assert(tor_addr_eq(&srcaddr.addr, &destaddr.addr));
   tt_int_op(srcaddr.port, ==, destaddr.port);
-  /* Test with an ipv4 addr with port*/
-  tor_addr_port_parse(0, "2001:0db8:85a3:0042:1000:8a2e:0370:7334:102",
+  /* Test with an ipv6 addr with port*/
+  tor_addr_port_parse(0, "[2001:0db8:85a3:0042:1000:8a2e:0370:7334]:102",
       &srcaddr.addr, &srcaddr.port);
   tor_addr_make_null(&destaddr.addr, AF_INET);
   destaddr.port = 0;
   tor_addr_port_copy(&destaddr, &srcaddr);
   tt_assert(tor_addr_eq(&srcaddr.addr, &destaddr.addr));
   tt_int_op(srcaddr.port, ==, destaddr.port);
-  /* Test with an ipv4 addr without port*/
+  /* Test with an ipv6 addr without port*/
   tor_addr_port_parse(0, "2001:0db8:85a3:0042:1000:8a2e:0370:7334",
       &srcaddr.addr, &srcaddr.port);
   tor_addr_make_null(&destaddr.addr, AF_INET);
@@ -1253,6 +1254,47 @@ test_addr_port_copy (void *data)
 done:
   ;
 }
+
+static void
+test_addr_port_eq (void *data)
+{
+  tor_addr_port_t addr1;
+  tor_addr_port_t addr2;
+
+  (void) data;
+  /* load two ipv4 addr_port_ts & test for equality */
+  tor_addr_port_parse(0, "123.12.3.123:102", &addr1.addr, &addr1.port);
+  tor_addr_port_parse(0, "123.12.3.123:102", &addr2.addr, &addr2.port);
+  tt_assert(tor_addr_eq(&addr1.addr, &addr2.addr));
+  tt_int_op(addr1.port, ==, addr2.port);
+  tt_assert(tor_addr_port_eq(&addr1, &addr2));
+  /* load two ipv4 addr_port_ts with different ports & test for inequality */
+  tor_addr_port_parse(0, "123.12.3.123:1234", &addr1.addr, &addr1.port);
+  tor_addr_port_parse(0, "123.12.3.123:1", &addr2.addr, &addr2.port);
+  tt_assert(tor_addr_eq(&addr1.addr, &addr2.addr));
+  tt_int_op(addr1.port, !=, addr2.port);
+  tt_assert(!tor_addr_port_eq(&addr1, &addr2));
+  /* load two ipv6 addr_port_ts & test for equality */
+  tor_addr_port_parse(0, "[2001:0db8:85a3:0042:1000:8a2e:0370:7334]:102",
+      &addr1.addr, &addr1.port);
+  tor_addr_port_parse(0, "[2001:0db8:85a3:0042:1000:8a2e:0370:7334]:102",
+      &addr2.addr, &addr2.port);
+  tt_assert(tor_addr_eq(&addr1.addr, &addr2.addr));
+  tt_int_op(addr1.port, ==, addr2.port);
+  tt_assert(tor_addr_port_eq(&addr1, &addr2));
+  /* load two ipv6 addr_port_ts w/ different ports & test for (in)equality */
+  tor_addr_port_parse(0, "[2001:0db8:85a3:0042:1000:8a2e:0370:7334]:1234",
+      &addr1.addr, &addr1.port);
+  tor_addr_port_parse(0, "[2001:0db8:85a3:0042:1000:8a2e:0370:7334]:1",
+      &addr2.addr, &addr2.port);
+  tt_assert(tor_addr_eq(&addr1.addr, &addr2.addr));
+  tt_int_op(addr1.port, !=, addr2.port);
+  tt_assert(!tor_addr_port_eq(&addr1, &addr2));
+done:
+  ;
+}
+
+
 #define ADDR_LEGACY(name)                                               \
   { #name, legacy_test_helper, 0, &legacy_setup, test_addr_ ## name }
 
@@ -1271,6 +1313,7 @@ struct testcase_t addr_tests[] = {
   { "addr_clone", test_addr_clone, 0, NULL, NULL},
   { "addr_make_null", test_addr_make_null, 0, NULL, NULL},
   { "addr_port_copy", test_addr_port_copy, 0, NULL, NULL},
+  { "addr_port_eq", test_addr_port_eq, 0, NULL, NULL},
   END_OF_TESTCASES
 };
 
