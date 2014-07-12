@@ -920,7 +920,7 @@ tor_addr_compare(const tor_addr_t *addr1, const tor_addr_t *addr2,
   return tor_addr_compare_masked(addr1, addr2, 128, how);
 }
 
-/** Given two <b>tor_addr_port_t *</b>s, return a truthful int value iif both
+/** Given two <b>tor_addr_port_t *</b>s, return a truthful int value iff both
  * the addresses and ports in <b>a</b> and <b>b</b> are equal. If NULL is
  * passed to either address, 0 is returned.
  */
@@ -1272,7 +1272,7 @@ get_interface_addresses_raw, (int severity))
 
   if (!(fn = (GetAdaptersAddresses_fn_t)
                   GetProcAddress(lib, "GetAdaptersAddresses"))) {
-    log_fn(severity, LD_NET, "Unable to obtain pointer to "
+    log_fn(severity, LD_NET, "Unable to obtain pointer to " \
            "GetAdaptersAddresses");
     goto done;
   }
@@ -1376,8 +1376,8 @@ tor_addr_is_multicast(const tor_addr_t *a)
  * Internet. These addresses should only be used in checking whether our
  * addresses have changed. Return when we can't find an address.
  */
-smartlist_t *
-get_interface_address6(int severity, sa_family_t family)
+MOCK_IMPL(smartlist_t *,
+get_interface_address6, (int severity, sa_family_t family))
 {
   smartlist_t *addrs;
   int sock=-1;
@@ -1491,6 +1491,7 @@ get_stable_interface_address6(int severity, sa_family_t family,
 {
   smartlist_t *list = NULL;
   const tor_addr_t *first_address;
+  int ret = -1;
 
   if (family != AF_INET && family != AF_INET6) {
       /* We can't return any other kind of address */
@@ -1505,9 +1506,8 @@ get_stable_interface_address6(int severity, sa_family_t family,
     return -1;
   }
   if (! (first_address = get_first_address_by_af(list, family))) {
-    SMARTLIST_FOREACH(list, tor_addr_t *, a, tor_free(a));
-    smartlist_free(list);
-    return -1;
+    ret = -1;
+    goto cleanup_exit;
   }
 
   /* If we don't know any address yet, pick the one we've discovered above. */
@@ -1515,16 +1515,14 @@ get_stable_interface_address6(int severity, sa_family_t family,
     last_discovered_ipv4_address = tor_malloc(sizeof(tor_addr_t));
     tor_addr_copy(last_discovered_ipv4_address, first_address);
     tor_addr_copy(addr, first_address);
-    SMARTLIST_FOREACH(list, tor_addr_t *, a, tor_free(a));
-    smartlist_free(list);
-    return 1;
+    ret = 1;
+    goto cleanup_exit;
   } else if (family == AF_INET6 && ! last_discovered_ipv6_address) {
     last_discovered_ipv6_address = tor_malloc(sizeof(tor_addr_t));
     tor_addr_copy(last_discovered_ipv6_address, first_address);
     tor_addr_copy(addr, first_address);
-    SMARTLIST_FOREACH(list, tor_addr_t *, a, tor_free(a));
-    smartlist_free(list);
-    return 1;
+    ret = 1;
+    goto cleanup_exit;
   }
 
   /* If the previous address is in the list, stick to it. */
@@ -1533,9 +1531,8 @@ get_stable_interface_address6(int severity, sa_family_t family,
       SMARTLIST_FOREACH_BEGIN(list, tor_addr_t *, a) {
         if (tor_addr_eq(last_discovered_ipv4_address, a)) {
           tor_addr_copy(addr, a);
-          SMARTLIST_FOREACH(list, tor_addr_t *, a, tor_free(a));
-          smartlist_free(list);
-          return 0;
+          ret = 0;
+          goto cleanup_exit;
         }
       } SMARTLIST_FOREACH_END(a);
       break;
@@ -1543,9 +1540,8 @@ get_stable_interface_address6(int severity, sa_family_t family,
       SMARTLIST_FOREACH_BEGIN(list, tor_addr_t *, a) {
         if (tor_addr_eq(last_discovered_ipv6_address, a)) {
           tor_addr_copy(addr, a);
-          SMARTLIST_FOREACH(list, tor_addr_t *, a, tor_free(a));
-          smartlist_free(list);
-          return 0;
+          ret = 0;
+          goto cleanup_exit;
         }
       } SMARTLIST_FOREACH_END(a);
       break;
@@ -1553,17 +1549,20 @@ get_stable_interface_address6(int severity, sa_family_t family,
 
   /* We're still here, so we knew about an address previously, but now have
    * entirely new addresses. */
-  if (family == AF_INET)
+  if (family == AF_INET) {
     tor_addr_copy(last_discovered_ipv4_address, first_address);
-  else if (family == AF_INET6)
+  } else if (family == AF_INET6) {
     tor_addr_copy(last_discovered_ipv6_address, first_address);
-
+  }
   tor_addr_copy(addr, first_address);
-  if (list) {
+  ret = 1;
+
+cleanup_exit:
+  if (list != NULL) {
     SMARTLIST_FOREACH(list, tor_addr_t *, a, tor_free(a));
     smartlist_free(list);
   }
-  return 1;
+  return ret;
 }
 
 /* ======

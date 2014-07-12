@@ -149,7 +149,8 @@ char *tor_dup_addr(const tor_addr_t *addr) ATTR_MALLOC;
 const char *fmt_addr_impl(const tor_addr_t *addr, int decorate);
 const char *fmt_addrport(const tor_addr_t *addr, uint16_t port);
 const char * fmt_addr32(uint32_t addr);
-smartlist_t *get_interface_address6(int severity, sa_family_t family);
+MOCK_DECL(smartlist_t *, get_interface_address6,
+        (int severity, sa_family_t family));
 int get_stable_interface_address6(int severity, sa_family_t family,
                                   tor_addr_t* addr);
 MOCK_DECL(smartlist_t *, get_interface_addresses_raw, (int severity));
