@@ -928,6 +928,12 @@ int
 tor_addr_port_eq(const tor_addr_port_t *a, const tor_addr_port_t *b)
 {
   int addrs_eq = 0;
+  if (a == b) {
+      /* If <b>a</b> and <b>b</b> point to the same memory location, they're
+       * probably the same. Also allows <b>tor_addr_port_eq(NULL, NULL)</b>
+       * to be truthy. */
+      return 1;
+  }
   if (a == NULL || b == NULL) {
     return 0;
   }

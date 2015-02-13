@@ -1301,7 +1301,8 @@ test_addr_port_eq(void *data)
   /* Test with NULLs */
   tt_int_op(tor_addr_port_eq(NULL, &addr2), ==, 0);
   tt_int_op(tor_addr_port_eq(&addr1, NULL), ==, 0);
-  tt_int_op(tor_addr_port_eq(NULL, NULL), ==, 0);
+  /* NULL is equal to NULL, so should return 1. */
+  tt_int_op(tor_addr_port_eq(NULL, NULL), ==, 1);
  done:
   ;
 }
